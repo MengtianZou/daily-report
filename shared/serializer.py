@@ -46,6 +46,14 @@ def report_to_dict(report: DailyReport) -> dict:
                         "status_from": t.status_from,
                         "status_to": t.status_to,
                         "time": _hhmm(t.updated_at),
+                        "progress": f"{t.progress[0]}/{t.progress[1]}" if t.progress[1] > 0 else "",
+                        "subtasks": [
+                            {
+                                "title": s.title,
+                                "status_to": s.status_to,
+                            }
+                            for s in t.subtasks
+                        ],
                     }
                     for t in member.tasks
                 ],

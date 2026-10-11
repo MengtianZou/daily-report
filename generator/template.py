@@ -48,7 +48,18 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       {% if 'lark_task' in failed_sources %}<p style="margin:0;font-size:13px;color:#c0392b;">⚠️ 数据获取失败</p>
       {% elif member.tasks %}<ul style="margin:0;padding-left:18px;font-size:13px;line-height:1.8;">
         {% for t in member.tasks %}
-        <li>{{ t.status_from }} → <strong>{{ t.status_to }}</strong>：{{ t.title }}</li>
+        <li>{% if t.status_from %}{{ t.status_from }} → {% endif %}<strong>{{ t.status_to }}</strong>：{{ t.title }}
+          {% if t.subtasks %}
+          <div style="margin-top:6px;padding-left:12px;border-left:2px solid #e5e7eb;">
+            <div style="font-size:12px;color:#2f6fed;font-weight:600;">📋 子任务 {{ t.progress[0] }}/{{ t.progress[1] }} 已完成</div>
+            <ul style="margin:4px 0 0;padding-left:0;list-style:none;">
+              {% for s in t.subtasks %}
+              <li style="font-size:12px;line-height:1.7;">{% if s.status_to == '已完成' %}✅{% else %}⬜{% endif %} {{ s.title }}（{{ s.status_to }}）</li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+        </li>
         {% endfor %}
       </ul>{% else %}<p style="margin:0;font-size:13px;color:#9aa0a6;">今日无记录</p>{% endif %}
 

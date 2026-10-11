@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from dashboard_helpers import sample_report
+from shared.models import TaskRecord
 from shared.serializer import report_to_dict
 
 
@@ -34,6 +37,8 @@ def test_report_to_dict_matches_dashboard_contract() -> None:
         "status_from": "进行中",
         "status_to": "已完成",
         "time": "15:10",
+        "progress": "",
+        "subtasks": [],
     }
 
     message = liu["messages"][0]
@@ -58,3 +63,40 @@ def test_failed_sources_are_carried() -> None:
     report.failed_sources = ["github", "lark_message"]
     data = report_to_dict(report)
     assert data["failed_sources"] == ["github", "lark_message"]
+
+
+def test_subtasks_serialize_with_status_and_progress() -> None:
+    report = sample_report()
+    report.members[0].tasks = [
+        TaskRecord(
+            assignee="ou_lzj",
+            title="上线日报",
+            status_from="进行中",
+            status_to="已完成",
+            updated_at=datetime(2026, 9, 26, 7, 10, tzinfo=timezone.utc),
+            subtasks=[
+                TaskRecord(
+                    assignee="",
+                    title="写采集",
+                    status_from="",
+                    status_to="已完成",
+                    updated_at=datetime(2026, 9, 26, 7, 10, tzinfo=timezone.utc),
+                ),
+                TaskRecord(
+                    assignee="",
+                    title="写模板",
+                    status_from="",
+                    status_to="进行中",
+                    updated_at=datetime(2026, 9, 26, 7, 10, tzinfo=timezone.utc),
+                ),
+            ],
+        )
+    ]
+    data = report_to_dict(report)
+    task = data["members"][0]["tasks"][0]
+
+    assert task["progress"] == "1/2"
+    assert task["subtasks"] == [
+        {"title": "写采集", "status_to": "已完成"},
+        {"title": "写模板", "status_to": "进行中"},
+    ]

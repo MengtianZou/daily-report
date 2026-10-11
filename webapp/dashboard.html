@@ -174,6 +174,16 @@ svg{display:block}
 .repo{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:1px 7px;color:var(--muted)}
 .record-title{font-size:14px;line-height:1.5;overflow-wrap:anywhere}
 .record-meta{display:flex;align-items:center;gap:12px;font-size:12px;color:var(--muted);flex-wrap:wrap;font-variant-numeric:tabular-nums}
+
+/* 子任务 */
+.subtasks{margin-top:8px;padding-left:12px;border-left:2px solid var(--border)}
+.subtask-progress{font-size:12px;color:var(--accent);font-weight:600;margin-bottom:6px}
+.subtask-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.subtask-item{display:flex;align-items:center;gap:8px;font-size:13px;flex-wrap:wrap}
+.subtask-icon{flex:none}
+.subtask-status{font-size:11px;color:var(--muted);white-space:nowrap}
+.subtask-title{flex:1;min-width:0;overflow-wrap:anywhere}
+.subtask-time{font-size:11px;color:var(--muted);flex:none}
 .diff-add{color:var(--success)}
 .diff-del{color:var(--danger)}
 .status{display:inline-flex;align-items:center;gap:6px;font-size:12px;flex-wrap:wrap}
@@ -401,14 +411,38 @@ svg{display:block}
       "</div></li>";
   }
   function taskItem(t) {
-    return '<li class="record">' +
-      '<div class="status">' +
+    var subtasksHtml = "";
+    if (t.subtasks && t.subtasks.length > 0) {
+      var progress = t.progress || "";
+      subtasksHtml = '<div class="subtasks">' +
+        '<div class="subtask-progress">📋 子任务 ' + esc(progress) + ' 已完成</div>' +
+        '<ul class="subtask-list">' +
+        t.subtasks.map(function(s) {
+          var icon = s.status_to === "已完成" ? "✅" : "⬜";
+          return '<li class="subtask-item">' +
+            '<span class="subtask-icon">' + icon + '</span>' +
+            '<span class="subtask-title">' + esc(s.title) + '</span>' +
+            '<span class="subtask-status">' + esc(s.status_to) + '</span>' +
+            '</li>';
+        }).join("") +
+        '</ul></div>';
+    }
+    var statusHtml;
+    var metaHtml = "";
+    if (t.status_from) {
+      statusHtml =
         '<span class="status-from">' + esc(t.status_from) + "</span>" +
         '<span class="arrow" aria-hidden="true">→</span>' +
-        '<span class="status-to">' + esc(t.status_to) + "</span>" +
-      "</div>" +
+        '<span class="status-to">' + esc(t.status_to) + "</span>";
+      metaHtml = '<span class="record-meta"><span class="time">' + esc(t.time) + "</span></span>";
+    } else {
+      statusHtml = '<span class="status-to">' + esc(t.status_to) + "</span>";
+    }
+    return '<li class="record">' +
+      '<div class="status">' + statusHtml + "</div>" +
       '<span class="record-title">' + esc(t.title) + "</span>" +
-      '<span class="record-meta"><span class="time">' + esc(t.time) + "</span></span>" +
+      subtasksHtml +
+      metaHtml +
       "</li>";
   }
   function messageItem(m) {

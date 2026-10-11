@@ -77,10 +77,21 @@ def _render_section(records: list, failed: bool, kind: str) -> list[str]:
             )
     elif kind == "lark_task":
         for t in records:
-            lines.append(
-                f"- {t.status_from} → **{t.status_to}**：{t.title}"
-                f"（{_hhmm(t.updated_at)}）"
-            )
+            if t.status_from:
+                lines.append(
+                    f"- {t.status_from} → **{t.status_to}**：{t.title}"
+                    f"（{_hhmm(t.updated_at)}）"
+                )
+            else:
+                # 父任务今日无变更，仅因子任务变更进入日报，展示当前状态即可
+                lines.append(f"- **{t.status_to}**：{t.title}")
+            # 子任务内容与完成程度
+            completed, total = t.progress
+            if total > 0:
+                lines.append(f"  - 子任务进度：**{completed}/{total}** 已完成")
+                for sub in t.subtasks:
+                    status_icon = "✅" if sub.status_to == "已完成" else "⬜"
+                    lines.append(f"    - {status_icon} {sub.title}（{sub.status_to}）")
     else:
         for m in records:
             lines.append(f"- [{m.chat_name}] {m.content}（{_hhmm(m.timestamp)}）")

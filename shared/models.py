@@ -31,6 +31,20 @@ class TaskRecord:
     status_from: str       # 原状态
     status_to: str         # 新状态
     updated_at: datetime  # 变更时间
+    parent_guid: str = ""  # 父任务 GUID，空表示顶层任务
+    subtasks: list["TaskRecord"] = field(default_factory=list)  # 子任务列表
+
+    @property
+    def is_subtask(self) -> bool:
+        return bool(self.parent_guid)
+
+    @property
+    def progress(self) -> tuple[int, int]:
+        """返回 (已完成子任务数, 总子任务数)，无子任务返回 (0, 0)。"""
+        if not self.subtasks:
+            return (0, 0)
+        completed = sum(1 for s in self.subtasks if s.status_to == "已完成")
+        return (completed, len(self.subtasks))
 
 
 @dataclass(slots=True)

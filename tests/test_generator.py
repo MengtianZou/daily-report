@@ -121,3 +121,41 @@ def test_failed_source_is_marked_in_markdown_and_html() -> None:
     assert "数据获取失败" in report.markdown
     assert "数据获取失败" in report.html
     assert "以下数据源获取失败" in report.html
+
+
+def test_subtask_progress_rendered_in_markdown_and_html() -> None:
+    parent = TaskRecord(
+        assignee="ou_zhangsan",
+        title="上线日报",
+        status_from="进行中",
+        status_to="已完成",
+        updated_at=_T1500,
+        subtasks=[
+            TaskRecord(
+                assignee="",
+                title="写采集",
+                status_from="",
+                status_to="已完成",
+                updated_at=_T1500,
+            ),
+            TaskRecord(
+                assignee="",
+                title="写模板",
+                status_from="",
+                status_to="进行中",
+                updated_at=_T1500,
+            ),
+        ],
+    )
+    reports = [
+        MemberReport(name="张三", github_username="zhangsan", tasks=[parent])
+    ]
+    report = formatter.generate(reports, _DAY, "研发一组")
+
+    assert "子任务进度：**1/2** 已完成" in report.markdown
+    assert "✅ 写采集（已完成）" in report.markdown
+    assert "⬜ 写模板（进行中）" in report.markdown
+
+    assert "📋 子任务 1/2 已完成" in report.html
+    assert "✅ 写采集（已完成）" in report.html
+    assert "⬜ 写模板（进行中）" in report.html
