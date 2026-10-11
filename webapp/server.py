@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import threading
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -208,10 +208,165 @@ class _DashboardHandler(BaseHTTPRequestHandler):
 
         self._send_json(404, {"code": 404, "msg": "not found"})
 
+    def _read_json_body(self) -> dict:
+        """读取请求体 JSON；非法时返回 {}。"""
+
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0:
+                return {}
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return {}
+
+    def do_POST(self) -> None:  # noqa: N802 - http.server 约定
+        path = urlparse(self.path).path
+        if path == "/api/plans":
+            self._post_plan()
+        elif path == "/api/issues":
+            self._post_issue()
+        else:
+            self._method_not_allowed()
+
+    def _post_plan(self) -> None:
+        body = self._read_json_body()
+        title = str(body.get("title", "")).strip()
+        if not title:
+            self._send_json(400, {"code": 400, "msg": "title 不能为空"})
+            return
+        owner = str(body.get("owner", "")).strip()
+        tomorrow = (datetime.now().astimezone() + timedelta(days=1)).date().isoformat()
+        with ReportStorage(
+            self.server.config["storage"]["sqlite_path"]
+        ) as storage:
+            plan_id = storage.save_plan(title, owner, tomorrow)
+        self._sync_latest_report()
+        self._send_json(200, {"code": 0, "id": plan_id, "plan_date": tomorrow})
+
+    def _post_issue(self) -> None:
+        body = self._read_json_body()
+        problem = str(body.get("problem", "")).strip()
+        if not problem:
+            self._send_json(400, {"code": 400, "msg": "problem 不能为空"})
+            return
+        solution = str(body.get("solution", "")).strip()
+        owner = str(body.get("owner", "")).strip()
+        status = str(body.get("status", "")).strip() or "处理中"
+        if status not in ("处理中", "已解决"):
+            self._send_json(400, {"code": 400, "msg": "status 仅支持 处理中/已解决"})
+            return
+        msg_key = str(body.get("msg_key", "")).strip()
+        today = datetime.now().astimezone().date().isoformat()
+        with ReportStorage(
+            self.server.config["storage"]["sqlite_path"]
+        ) as storage:
+            issue_id = storage.save_issue(
+                problem, solution, owner, today, status=status, msg_key=msg_key
+            )
+        self._sync_latest_report()
+        self._send_json(200, {"code": 0, "id": issue_id, "issue_date": today})
+
+    def do_DELETE(self) -> None:  # noqa: N802 - http.server 约定
+        path = urlparse(self.path).path
+        if path not in ("/api/plans", "/api/issues"):
+            self._method_not_allowed()
+            return
+
+        raw = parse_qs(urlparse(self.path).query).get("id", [None])[0]
+        try:
+            item_id = int(raw)
+        except (TypeError, ValueError):
+            self._send_json(400, {"code": 400, "msg": "id 非法"})
+            return
+        with ReportStorage(
+            self.server.config["storage"]["sqlite_path"]
+        ) as storage:
+            if path == "/api/plans":
+                deleted = storage.delete_plan(item_id)
+            else:
+                deleted = storage.delete_issue(item_id)
+        if not deleted:
+            self._send_json(404, {"code": 404, "msg": "条目不存在"})
+            return
+        self._sync_latest_report()
+        self._send_json(200, {"code": 0})
+
+    def do_PATCH(self) -> None:  # noqa: N802 - http.server 约定
+        if urlparse(self.path).path != "/api/issues":
+            self._method_not_allowed()
+            return
+
+        raw = parse_qs(urlparse(self.path).query).get("id", [None])[0]
+        try:
+            issue_id = int(raw)
+        except (TypeError, ValueError):
+            self._send_json(400, {"code": 400, "msg": "id 非法"})
+            return
+        status = str(self._read_json_body().get("status", "")).strip()
+        if status not in ("处理中", "已解决"):
+            self._send_json(400, {"code": 400, "msg": "status 仅支持 处理中/已解决"})
+            return
+        with ReportStorage(
+            self.server.config["storage"]["sqlite_path"]
+        ) as storage:
+            updated = storage.update_issue_status(issue_id, status)
+        if not updated:
+            self._send_json(404, {"code": 404, "msg": "条目不存在"})
+            return
+        self._sync_latest_report()
+        self._send_json(200, {"code": 0, "status": status})
+
+    def _sync_latest_report(self) -> None:
+        """把 plans/issues 表中的手动条目同步回当日报告 data_json。
+
+        使页面刷新（重新拉取 /api/reports）立即看到最新手动条目，
+        无需等待下一轮 60s 管道重建；失败仅记日志，不影响写操作结果。
+        """
+
+        now = datetime.now().astimezone()
+        today = now.date().isoformat()
+        tomorrow = (now + timedelta(days=1)).date().isoformat()
+        try:
+            with ReportStorage(
+                self.server.config["storage"]["sqlite_path"]
+            ) as storage:
+                latest = storage.iter_report_data(limit=1)
+                if not latest or latest[0].get("date") != today:
+                    return
+                data = latest[0]
+                auto_plans = [
+                    p for p in data.get("tomorrow_plans", [])
+                    if p.get("source") != "manual"
+                ]
+                data["tomorrow_plans"] = auto_plans + [
+                    {"title": r["title"], "owner": r["owner"],
+                     "source": "manual", "id": int(r["id"])}
+                    for r in storage.iter_plans(tomorrow)
+                ]
+                manual_rows = storage.iter_issues(today)
+                claimed = {r["msg_key"] for r in manual_rows if r["msg_key"]}
+                auto_issues = [
+                    i for i in data.get("issues", [])
+                    if i.get("source") != "manual"
+                    and i.get("msg_key", "") not in claimed
+                ]
+                data["issues"] = auto_issues + [
+                    {"problem": r["problem"], "solution": r["solution"],
+                     "owner": r["owner"], "status": r["status"],
+                     "source": "manual", "id": int(r["id"]),
+                     "msg_key": r["msg_key"]}
+                    for r in manual_rows
+                ]
+                storage.update_report_data(today, data["team_name"], data)
+        except Exception as exc:  # 同步失败不影响写操作
+            logger.warning(
+                "data_json 同步失败", extra={"error": str(exc)}
+            )
+
     def _method_not_allowed(self) -> None:
         self._send_json(405, {"code": 405, "msg": "method not allowed"})
 
-    do_POST = do_PUT = do_DELETE = do_PATCH = _method_not_allowed  # type: ignore[assignment]
+    do_PUT = _method_not_allowed  # type: ignore[assignment]
 
 
 def build_server(

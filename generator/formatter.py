@@ -13,8 +13,10 @@ from generator.template import render_report_html
 from shared.models import (
     CommitRecord,
     DailyReport,
+    IssueItem,
     MemberReport,
     MessageRecord,
+    PlanItem,
     TaskRecord,
 )
 
@@ -98,17 +100,51 @@ def _render_section(records: list, failed: bool, kind: str) -> list[str]:
     return lines
 
 
+def _render_plans(plans: list[PlanItem]) -> list[str]:
+    """渲染「明日计划」板块行。"""
+
+    if not plans:
+        return ["暂无"]
+    lines: list[str] = []
+    for p in plans:
+        owner = p.owner or "团队"
+        lines.append(f"- 📌 {owner}：{p.title}")
+    return lines
+
+
+def _render_issues(issues: list[IssueItem]) -> list[str]:
+    """渲染「问题与解决」板块行。"""
+
+    if not issues:
+        return ["暂无"]
+    lines: list[str] = []
+    for i in issues:
+        icon = "✅" if i.status == "已解决" else "⏳"
+        solution = i.solution or "方案待定"
+        lines.append(f"- {icon} {i.problem} → {solution}")
+    return lines
+
+
+def report_title(members: list[MemberReport], team_name: str) -> str:
+    """日报展示标题：单人日报以「成员名的工作日报」命名，多人用团队名。"""
+    if len(members) == 1:
+        return f"{members[0].name}的工作日报"
+    return f"{team_name} 工作日报"
+
+
 def build_markdown(
     team_name: str,
     report_date: date,
     members: list[MemberReport],
     failed_sources: list[str] | None = None,
+    tomorrow_plans: list[PlanItem] | None = None,
+    issues: list[IssueItem] | None = None,
 ) -> str:
     """生成完整 Markdown 日报。"""
 
     failed = set(failed_sources or [])
     lines: list[str] = [
-        f"# {team_name} 工作日报（{report_date.isoformat()}）",
+        f"# {report_title(members, team_name)}（{report_date.isoformat()}）",
         "",
     ]
     if failed:
@@ -117,8 +153,11 @@ def build_markdown(
             [f"> ⚠️ 以下数据源获取失败：{labels}", ""]
         )
 
+    # 单人日报标题已含成员名，不再重复成员小节标题
+    single = len(members) == 1
     for member in members:
-        lines.extend([f"## {member.name}", ""])
+        if not single:
+            lines.extend([f"## {member.name}", ""])
         lines.append("### 代码提交")
         lines.extend(_render_section(member.commits, "github" in failed, "github"))
         lines.append("")
@@ -131,6 +170,13 @@ def build_markdown(
         )
         lines.append("")
 
+    lines.extend(["## 问题与解决", ""])
+    lines.extend(_render_issues(list(issues or [])))
+    lines.append("")
+
+    lines.extend(["## 明日计划", ""])
+    lines.extend(_render_plans(list(tomorrow_plans or [])))
+
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -140,14 +186,22 @@ def generate(
     team_name: str,
     *,
     failed_sources: list[str] | None = None,
+    tomorrow_plans: list[PlanItem] | None = None,
+    issues: list[IssueItem] | None = None,
 ) -> DailyReport:
     """根据成员数据生成日报（design.md §4.2 生成层接口）。"""
 
     markdown = build_markdown(
-        team_name, report_date, members, failed_sources=failed_sources
+        team_name, report_date, members,
+        failed_sources=failed_sources, tomorrow_plans=tomorrow_plans,
+        issues=issues,
     )
     html = render_report_html(
-        team_name, report_date, members, failed_sources=failed_sources
+        team_name, report_date, members,
+        failed_sources=failed_sources, tomorrow_plans=tomorrow_plans,
+        issues=issues,
+        report_title=report_title(members, team_name),
+        show_member_names=len(members) > 1,
     )
     return DailyReport(
         date=report_date,
@@ -157,4 +211,6 @@ def generate(
         markdown=markdown,
         html=html,
         failed_sources=list(failed_sources or []),
+        tomorrow_plans=list(tomorrow_plans or []),
+        issues=list(issues or []),
     )

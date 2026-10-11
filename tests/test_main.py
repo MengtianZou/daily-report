@@ -9,7 +9,7 @@ import pytest
 import main
 from shared.config import load_config
 from shared.errors import CollectorError, ConfigurationError
-from shared.models import CommitRecord, TaskRecord
+from shared.models import CommitRecord, MessageRecord, TaskRecord
 from shared.storage import ReportStorage
 
 _CONFIG_YAML_TEMPLATE = """
@@ -38,6 +38,7 @@ lark_message:
   app_secret_env: "LARK_APP_SECRET"
   chat_id: "oc_x"
   keywords: ["上线"]
+  issue_keywords: ["问题", "报错"]
   sensitive_words: ["薪资"]
   chat_name: "研发群"
   timeout: 5
@@ -216,9 +217,23 @@ def _patch_collectors(monkeypatch, *, fail: set[str] | None = None) -> dict:
         counts["messages"] += 1
         return []
 
+    def fake_lark_open(project_id, **kwargs):
+        if "lark_task" in fail:
+            raise CollectorError("task down", source="lark_task")
+        return [
+            TaskRecord(
+                assignee="ou_zhangsan",
+                title="准备明日评审",
+                status_from="",
+                status_to="进行中",
+                updated_at=datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc),
+            )
+        ]
+
     monkeypatch.setattr(main.github, "collect", fake_github)
     monkeypatch.setattr(main.lark_task, "collect", fake_lark_task)
     monkeypatch.setattr(main.lark_msg, "collect", fake_lark_msg)
+    monkeypatch.setattr(main.lark_task, "collect_open", fake_lark_open)
     return counts
 
 
@@ -285,3 +300,197 @@ def test_pipeline_all_sources_fail_returns_false(config, monkeypatch) -> None:
     monkeypatch.setattr(main.lark_bot, "send", should_not_call)
 
     assert main.run_pipeline(config, now=_MONDAY) is False
+
+
+def test_pipeline_merges_auto_and_manual_tomorrow_plans(config, monkeypatch) -> None:
+    _patch_collectors(monkeypatch)
+    monkeypatch.setattr(main.email, "send", lambda *a, **kw: True)
+    monkeypatch.setattr(main.lark_bot, "send", lambda *a, **kw: True)
+
+    # 手动计划：plan_date = 日报日期 + 1（2026-09-29）
+    with ReportStorage(config["storage"]["sqlite_path"]) as storage:
+        storage.save_plan("整理周报", "张三", "2026-09-29")
+
+    ok = main.run_pipeline(config, now=_MONDAY)
+    assert ok is True
+
+    with ReportStorage(config["storage"]["sqlite_path"]) as storage:
+        row = storage.get_report("2026-09-28", "测试团队")
+
+    assert row is not None
+    assert "## 明日计划" in row["markdown"]
+    assert "📌 张三：准备明日评审" in row["markdown"]      # 自动：飞书未完成
+    assert "📌 张三：整理周报" in row["markdown"]  # 手动：plans 表
+    assert '"tomorrow_plans"' in row["data_json"]
+
+
+def test_tomorrow_plans_exclude_non_member_tasks(config, monkeypatch) -> None:
+    _patch_collectors(monkeypatch)
+
+    def fake_lark_open_with_outsider(project_id, **kwargs):
+        return [
+            TaskRecord(
+                assignee="ou_zhangsan",
+                title="成员内任务",
+                status_from="",
+                status_to="进行中",
+                updated_at=datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc),
+            ),
+            TaskRecord(
+                assignee="ou_outsider",
+                title="非成员任务",
+                status_from="",
+                status_to="进行中",
+                updated_at=datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc),
+            ),
+        ]
+
+    monkeypatch.setattr(main.lark_task, "collect_open", fake_lark_open_with_outsider)
+
+    plans = main._collect_tomorrow_plans(config, date(2026, 9, 28))
+
+    titles = [p.title for p in plans if p.source == "auto"]
+    assert titles == ["成员内任务"]
+
+
+# ---- 问题与解决 ----
+_ISSUE_T0 = datetime(2026, 9, 28, 3, 0, tzinfo=timezone.utc)
+_ISSUE_T1 = _ISSUE_T0 + timedelta(hours=1)
+
+
+def _patch_msg_by_keywords(monkeypatch, contents) -> None:
+    """按 keywords 参数区分返回内容，模拟采集层的关键词过滤行为。
+
+    两次调用返回不同时间戳的消息（真实场景中为不同消息）。
+    """
+
+    def fake_lark_msg(chat_id, keywords, since, until, **kwargs):
+        if "问题" in keywords or "报错" in keywords:  # 问题板块的二次采集
+            return [
+                MessageRecord(
+                    sender="ou_zhangsan", content=c,
+                    timestamp=_ISSUE_T1, chat_name="研发群",
+                )
+                for c in contents
+            ]
+        return [
+            MessageRecord(
+                sender="ou_zhangsan", content="功能已上线",
+                timestamp=_ISSUE_T0, chat_name="研发群",
+            )
+        ]
+
+    monkeypatch.setattr(main.lark_msg, "collect", fake_lark_msg)
+
+
+def test_pipeline_collects_issues_from_lark_messages(config, monkeypatch) -> None:
+    _patch_collectors(monkeypatch)
+    _patch_msg_by_keywords(monkeypatch, ["遇到问题：接口报错"])
+    monkeypatch.setattr(main.email, "send", lambda *a, **kw: True)
+    monkeypatch.setattr(main.lark_bot, "send", lambda *a, **kw: True)
+
+    ok = main.run_pipeline(config, now=_MONDAY)
+    assert ok is True
+
+    with ReportStorage(config["storage"]["sqlite_path"]) as storage:
+        row = storage.get_report("2026-09-28", "测试团队")
+
+    assert row is not None
+    assert "## 问题与解决" in row["markdown"]
+    assert "- ⏳ 遇到问题：接口报错 → 方案待定" in row["markdown"]
+    assert '"issues"' in row["data_json"]
+
+
+def test_issues_dedupe_and_keyword_filter(config, monkeypatch) -> None:
+    # 两次调用返回同一批消息（同 sender 同时间戳）→ 全部与协作沟通重复
+    def fake_same_for_all(chat_id, keywords, since, until, **kwargs):
+        return [
+            MessageRecord(sender="ou_zhangsan", content=c,
+                          timestamp=_ISSUE_T0, chat_name="研发群")
+            for c in ["遇到问题：接口报错", "正常上线消息", "薪资问题聊一下"]
+        ]
+
+    monkeypatch.setattr(main.lark_msg, "collect", fake_same_for_all)
+
+    since = _MONDAY.replace(hour=0, minute=0, second=0, microsecond=0)
+    messages = main.lark_msg.collect(
+        "oc_x", ["上线"], since, _MONDAY, app_id_env="LARK_APP_ID",
+        app_secret_env="LARK_APP_SECRET", sensitive_words=["薪资"],
+        chat_name="研发群", timeout=5,
+    )
+
+    # 场景一：全部候选与协作沟通板块重复 → 无自动条目
+    issues = main._collect_issues(config, since, _MONDAY, messages, _MONDAY.date())
+    assert all(i.source != "auto" for i in issues)
+
+    # 场景二：无历史消息 → 关键词/敏感词防御过滤生效
+    issues2 = main._collect_issues(config, since, _MONDAY, [], _MONDAY.date())
+    problems = [i.problem for i in issues2]
+    assert "遇到问题：接口报错" in problems
+    assert "正常上线消息" not in problems   # 无问题关键词 → 过滤
+    assert "薪资问题聊一下" not in problems  # 命中敏感词 → 过滤
+
+
+def test_issue_status_resolved_keyword(config, monkeypatch) -> None:
+    _patch_collectors(monkeypatch)
+    _patch_msg_by_keywords(monkeypatch, ["接口报错已解决"])
+
+    since = _MONDAY.replace(hour=0, minute=0, second=0, microsecond=0)
+    issues = main._collect_issues(config, since, _MONDAY, [], _MONDAY.date())
+
+    assert len(issues) == 1
+    assert issues[0].status == "已解决"
+    assert issues[0].owner == "张三"
+
+
+def test_auto_issue_carries_msg_key(config, monkeypatch) -> None:
+    _patch_collectors(monkeypatch)
+    _patch_msg_by_keywords(monkeypatch, ["遇到问题：接口报错"])
+
+    since = _MONDAY.replace(hour=0, minute=0, second=0, microsecond=0)
+    issues = main._collect_issues(config, since, _MONDAY, [], _MONDAY.date())
+
+    auto = [i for i in issues if i.source == "auto"]
+    assert len(auto) == 1
+    assert auto[0].msg_key == f"ou_zhangsan|{_ISSUE_T1.isoformat()}"
+
+
+def test_claimed_message_is_skipped(config, monkeypatch) -> None:
+    """已在看板认领补充方案的消息，不再重复生成自动条目。"""
+    _patch_collectors(monkeypatch)
+    _patch_msg_by_keywords(monkeypatch, ["遇到问题：接口报错"])
+
+    key = f"ou_zhangsan|{_ISSUE_T1.isoformat()}"
+    with ReportStorage(config["storage"]["sqlite_path"]) as storage:
+        storage.save_issue(
+            "遇到问题：接口报错", "已修复", "张三",
+            _MONDAY.date().isoformat(), status="已解决", msg_key=key,
+        )
+
+    since = _MONDAY.replace(hour=0, minute=0, second=0, microsecond=0)
+    issues = main._collect_issues(config, since, _MONDAY, [], _MONDAY.date())
+
+    assert [i.source for i in issues] == ["manual"]
+    assert issues[0].msg_key == key
+    assert issues[0].issue_id > 0
+
+
+def test_issue_collection_failure_does_not_block(config, monkeypatch) -> None:
+    _patch_collectors(monkeypatch)
+
+    def fake_msg_fail_on_issue(chat_id, keywords, since, until, **kwargs):
+        if "问题" in keywords or "报错" in keywords:
+            raise CollectorError("msg down", source="lark_message")
+        return []
+
+    monkeypatch.setattr(main.lark_msg, "collect", fake_msg_fail_on_issue)
+    monkeypatch.setattr(main.email, "send", lambda *a, **kw: True)
+    monkeypatch.setattr(main.lark_bot, "send", lambda *a, **kw: True)
+
+    ok = main.run_pipeline(config, now=_MONDAY)
+    assert ok is True
+
+    with ReportStorage(config["storage"]["sqlite_path"]) as storage:
+        row = storage.get_report("2026-09-28", "测试团队")
+    assert row is not None
+    assert "## 问题与解决" in row["markdown"]

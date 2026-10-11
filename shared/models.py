@@ -69,6 +69,29 @@ class MemberReport:
 
 
 @dataclass(slots=True)
+class PlanItem:
+    """明日计划条目。"""
+
+    title: str            # 计划内容
+    owner: str = ""       # 负责人姓名，空表示团队
+    source: str = "auto"  # auto：飞书未完成任务；manual：看板手动添加
+    plan_id: int = 0      # manual 条目的 plans 表 id，auto 恒为 0
+
+
+@dataclass(slots=True)
+class IssueItem:
+    """问题与解决条目。"""
+
+    problem: str          # 问题描述
+    solution: str = ""    # 解决方案，空表示待定
+    owner: str = ""       # 负责人姓名，空表示团队
+    status: str = "处理中"  # 处理中 / 已解决
+    source: str = "auto"  # auto：群消息提取；manual：看板手动添加
+    issue_id: int = 0     # manual 条目的 issues 表 id，auto 恒为 0
+    msg_key: str = ""     # 来源消息键（sender|timestamp），认领补充方案后去重用
+
+
+@dataclass(slots=True)
 class DailyReport:
     """每日报告：管道最终产物。"""
 
@@ -79,3 +102,5 @@ class DailyReport:
     markdown: str = ""                           # 完整 Markdown 日报
     html: str = ""                               # 完整 HTML 日报
     failed_sources: list[str] = field(default_factory=list)  # 失败数据源标识
+    tomorrow_plans: list[PlanItem] = field(default_factory=list)  # 明日计划
+    issues: list[IssueItem] = field(default_factory=list)  # 问题与解决

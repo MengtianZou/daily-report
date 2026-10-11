@@ -16,12 +16,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>{{ team_name }} 工作日报 {{ report_date }}</title>
+<title>{{ report_title }} {{ report_date }}</title>
 </head>
 <body style="margin:0;padding:24px;background:#f5f6f8;font-family:'Segoe UI','Microsoft YaHei',sans-serif;color:#2b2f36;">
   <div style="max-width:820px;margin:0 auto;background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06);">
     <div style="padding:20px 28px;background:#2f6fed;color:#ffffff;">
-      <h1 style="margin:0;font-size:20px;">{{ team_name }} · 工作日报</h1>
+      <h1 style="margin:0;font-size:20px;">{{ report_title }}</h1>
       <div style="margin-top:4px;font-size:13px;opacity:.85;">{{ report_date }}</div>
     </div>
 
@@ -33,7 +33,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
     {% for member in members %}
     <section style="padding:18px 28px;border-top:1px solid #eef0f3;">
-      <h2 style="margin:0 0 10px;font-size:16px;color:#2f6fed;">{{ member.name }}</h2>
+      {% if show_member_names %}<h2 style="margin:0 0 10px;font-size:16px;color:#2f6fed;">{{ member.name }}</h2>{% endif %}
 
       <h3 style="margin:10px 0 6px;font-size:13px;color:#6b7280;">代码提交</h3>
       {% if 'github' in failed_sources %}<p style="margin:0;font-size:13px;color:#c0392b;">⚠️ 数据获取失败</p>
@@ -72,6 +72,29 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       </ul>{% else %}<p style="margin:0;font-size:13px;color:#9aa0a6;">今日无记录</p>{% endif %}
     </section>
     {% endfor %}
+
+    {% if issues %}
+    <section style="padding:18px 28px;border-top:1px solid #eef0f3;">
+      <h2 style="margin:0 0 10px;font-size:16px;color:#2f6fed;">问题与解决</h2>
+      <ul style="margin:0;padding-left:18px;font-size:13px;line-height:1.8;">
+        {% for i in issues %}
+        <li>{% if i.status == '已解决' %}<span style="color:#16a34a;">✅</span>{% else %}<span style="color:#d97706;">⏳</span>{% endif %}
+            {{ i.problem }} → {{ i.solution if i.solution else '方案待定' }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
+    {% if tomorrow_plans %}
+    <section style="padding:18px 28px;border-top:1px solid #eef0f3;">
+      <h2 style="margin:0 0 10px;font-size:16px;color:#2f6fed;">明日计划</h2>
+      <ul style="margin:0;padding-left:18px;font-size:13px;line-height:1.8;">
+        {% for p in tomorrow_plans %}
+        <li>📌 {{ p.owner if p.owner else '团队' }}：{{ p.title }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
   </div>
 </body>
 </html>
@@ -85,13 +108,21 @@ def render_report_html(
     report_date: date,
     members: list[MemberReport],
     failed_sources: list[str] | None = None,
+    tomorrow_plans: list | None = None,
+    issues: list | None = None,
+    report_title: str | None = None,
+    show_member_names: bool = True,
 ) -> str:
     """渲染独立 HTML 文档。"""
 
     template = _ENV.from_string(_HTML_TEMPLATE)
     return template.render(
         team_name=team_name,
+        report_title=report_title or f"{team_name} · 工作日报",
         report_date=report_date.isoformat(),
         members=members,
         failed_sources=failed_sources or [],
+        tomorrow_plans=tomorrow_plans or [],
+        issues=issues or [],
+        show_member_names=show_member_names,
     )

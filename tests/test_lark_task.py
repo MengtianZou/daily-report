@@ -12,7 +12,7 @@ _UNTIL = datetime(2026, 9, 25, 18, 0, tzinfo=timezone.utc)
 
 
 class FakeLark:
-    """paginate 返回精简任务（仅 guid），request 返回完整任务详情。"""
+    """模拟真实飞书 API：清单只返回顶层任务，子任务走 subtasks 子接口。"""
 
     def __init__(self, tasks: list[dict]) -> None:
         self._tasks = {t.get("guid", f"guid_{i}"): t for i, t in enumerate(tasks)}
@@ -20,8 +20,15 @@ class FakeLark:
 
     def paginate(self, path: str, params: dict):
         self.paths.append(path)
-        for guid, t in self._tasks.items():
-            yield {"guid": guid, "summary": t.get("summary", "")}
+        if path.endswith("/subtasks"):
+            parent_guid = path.split("/")[-2]
+            for guid, t in self._tasks.items():
+                if t.get("parent_guid") == parent_guid:
+                    yield {"guid": guid, "summary": t.get("summary", "")}
+        else:  # 清单任务列表：仅顶层任务
+            for guid, t in self._tasks.items():
+                if not t.get("parent_guid"):
+                    yield {"guid": guid, "summary": t.get("summary", "")}
 
     def request(self, method: str, path: str, *, params=None, json_body=None):
         guid = path.rsplit("/", 1)[-1]
@@ -42,8 +49,9 @@ def test_collect_newly_created_task() -> None:
     fake = FakeLark([task])
     records = lark_task.collect("proj_x", _SINCE, _UNTIL, lark_client=fake)
 
-    # 请求路径必须携带清单 GUID，确保只采集该清单内的任务
-    assert fake.paths == ["/open-apis/task/v2/tasklists/proj_x/tasks"]
+    # 首个请求路径必须携带清单 GUID；子任务通过 subtasks 子接口获取
+    assert fake.paths[0] == "/open-apis/task/v2/tasklists/proj_x/tasks"
+    assert any(p.endswith("/subtasks") for p in fake.paths[1:])
 
     assert len(records) == 1
     record = records[0]
@@ -169,3 +177,48 @@ def test_collect_parent_surfaces_when_only_subtask_changed() -> None:
     assert record.status_from == ""  # 父任务今日无变更，仅展示当前状态
     assert record.status_to == "进行中"
     assert record.progress == (1, 1)
+
+
+def test_collect_open_returns_pending_tasks_with_subtasks() -> None:
+    # 未完成父任务返回（含子任务进度）；已完成任务被排除。
+    tasks = [
+        {
+            "guid": "g_open",
+            "summary": "上线日报",
+            "created_at": str(_ms(datetime(2026, 9, 20, 9, 0, tzinfo=timezone.utc))),
+            "completed_at": "0",
+            "members": [{"id": "ou_zhangsan", "role": "assignee"}],
+        },
+        {
+            "guid": "g_sub1",
+            "summary": "写采集",
+            "parent_guid": "g_open",
+            "created_at": str(_ms(datetime(2026, 9, 20, 9, 0, tzinfo=timezone.utc))),
+            "completed_at": str(_ms(datetime(2026, 9, 24, 9, 0, tzinfo=timezone.utc))),
+            "members": [{"id": "ou_zhangsan", "role": "assignee"}],
+        },
+        {
+            "guid": "g_sub2",
+            "summary": "写模板",
+            "parent_guid": "g_open",
+            "created_at": str(_ms(datetime(2026, 9, 21, 9, 0, tzinfo=timezone.utc))),
+            "completed_at": "0",
+            "members": [{"id": "ou_zhangsan", "role": "assignee"}],
+        },
+        {
+            "guid": "g_done",
+            "summary": "已完成的任务",
+            "created_at": str(_ms(datetime(2026, 9, 20, 9, 0, tzinfo=timezone.utc))),
+            "completed_at": str(_ms(datetime(2026, 9, 23, 9, 0, tzinfo=timezone.utc))),
+            "members": [{"id": "ou_zhangsan", "role": "assignee"}],
+        },
+    ]
+    fake = FakeLark(tasks)
+    records = lark_task.collect_open("proj_x", lark_client=fake)
+
+    assert [r.title for r in records] == ["上线日报"]
+    record = records[0]
+    assert record.status_from == ""
+    assert record.status_to == "进行中"
+    assert record.progress == (1, 2)
+    assert [s.title for s in record.subtasks] == ["写采集", "写模板"]

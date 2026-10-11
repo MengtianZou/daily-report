@@ -74,4 +74,25 @@ def report_to_dict(report: DailyReport) -> dict:
         "generated_at": _hhmm(generated_at) if generated_at else "",
         "failed_sources": list(report.failed_sources),
         "members": members,
+        "tomorrow_plans": [
+            {
+                "title": p.title,
+                "owner": p.owner,
+                "source": p.source,
+                "id": p.plan_id,
+            }
+            for p in report.tomorrow_plans
+        ],
+        "issues": [
+            {
+                "problem": i.problem,
+                "solution": i.solution,
+                "owner": i.owner,
+                "status": i.status,
+                "source": i.source,
+                "id": i.issue_id,
+                "msg_key": i.msg_key,
+            }
+            for i in report.issues
+        ],
     }

@@ -19,7 +19,11 @@ logger = get_logger(__name__)
 def build_card_payload(report: DailyReport) -> dict:
     """构造交互式卡片消息体。"""
 
-    title = f"{report.team_name} 日报 {report.date.isoformat()}"
+    # 单人日报以成员名命名卡片标题，多人用团队名
+    if len(report.members) == 1:
+        title = f"{report.members[0].name}的日报 {report.date.isoformat()}"
+    else:
+        title = f"{report.team_name} 日报 {report.date.isoformat()}"
     return {
         "msg_type": "interactive",
         "card": {

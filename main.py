@@ -21,7 +21,7 @@ import argparse
 import socket
 import time
 import webbrowser
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,7 @@ from shared.config import Config, load_config
 from shared.envfile import load_envfile
 from shared.errors import CollectorError, ConfigurationError, NotifierError
 from shared.logger import get_logger
+from shared.models import IssueItem, PlanItem
 from shared.storage import ReportStorage
 from webapp.export import render_dashboard
 
@@ -240,6 +241,127 @@ def _push_all(config: Config, report) -> dict[str, bool]:
     return results
 
 
+def _collect_tomorrow_plans(config: Config, today: date) -> list[PlanItem]:
+    """组装明日计划：自动（飞书未完成任务）+ 手动（plans 表，plan_date=明天）。"""
+
+    plans: list[PlanItem] = []
+    tomorrow = (today + timedelta(days=1)).isoformat()
+
+    if config["lark_task"].get("enabled"):
+        cfg = config["lark_task"]
+        name_map = {m["lark"]: m["name"] for m in config.members}
+        try:
+            open_tasks = lark_task.collect_open(
+                cfg["project_id"],
+                app_id_env=cfg.get("app_id_env", "LARK_APP_ID"),
+                app_secret_env=cfg.get("app_secret_env", "LARK_APP_SECRET"),
+                timeout=cfg.get("timeout", 10),
+            )
+        except CollectorError as exc:
+            # 明日计划为附加板块，获取失败不阻断日报生成
+            logger.error("明日计划：飞书未完成任务获取失败", extra={"error": str(exc)})
+        else:
+            for t in open_tasks:
+                if t.assignee not in name_map:
+                    continue  # 非团队成员的未完成任务不进入明日计划
+                plans.append(
+                    PlanItem(
+                        title=t.title,
+                        owner=name_map[t.assignee],
+                        source="auto",
+                    )
+                )
+
+    with ReportStorage(config["storage"]["sqlite_path"]) as storage:
+        for row in storage.iter_plans(tomorrow):
+            plans.append(
+                PlanItem(
+                    title=row["title"],
+                    owner=row["owner"],
+                    source="manual",
+                    plan_id=int(row["id"]),
+                )
+            )
+    return plans
+
+
+def _collect_issues(
+    config: Config,
+    since: datetime,
+    until: datetime,
+    messages: list,
+    today: date,
+) -> list[IssueItem]:
+    """组装问题与解决：自动（群消息按问题关键词提取）+ 手动（issues 表）。"""
+
+    issues: list[IssueItem] = []
+    issue_keywords = [
+        kw for kw in config.get_path("lark_message.issue_keywords", []) if kw
+    ]
+
+    with ReportStorage(config["storage"]["sqlite_path"]) as storage:
+        manual_rows = storage.iter_issues(today.isoformat())
+        # 已认领（看板补充过方案）的来源消息不再重复生成自动条目
+        claimed = {r["msg_key"] for r in manual_rows if r["msg_key"]}
+
+        if config["lark_message"].get("enabled") and issue_keywords:
+            cfg = config["lark_message"]
+            name_map = {m["lark"]: m["name"] for m in config.members}
+            sensitive = set(cfg.get("sensitive_words", []))
+            # 与「协作沟通」板块已采用的消息去重（同一条消息不在两处重复出现）
+            seen = {(m.sender, m.timestamp.isoformat()) for m in messages}
+            try:
+                candidates = lark_msg.collect(
+                    cfg["chat_id"],
+                    issue_keywords,
+                    since,
+                    until,
+                    app_id_env=cfg.get("app_id_env", "LARK_APP_ID"),
+                    app_secret_env=cfg.get("app_secret_env", "LARK_APP_SECRET"),
+                    sensitive_words=cfg.get("sensitive_words", []),
+                    chat_name=cfg.get("chat_name", cfg["chat_id"]),
+                    timeout=cfg.get("timeout", 10),
+                )
+            except CollectorError as exc:
+                # 问题板块为附加板块，获取失败不阻断日报生成
+                logger.error("问题与解决：飞书消息获取失败", extra={"error": str(exc)})
+            else:
+                for m in candidates:
+                    # 采集层按关键词过滤后再做一次防御性过滤，避免误采
+                    if not any(kw in m.content for kw in issue_keywords):
+                        continue
+                    if (m.sender, m.timestamp.isoformat()) in seen:
+                        continue
+                    if any(word in m.content for word in sensitive):
+                        continue
+                    key = f"{m.sender}|{m.timestamp.isoformat()}"
+                    if key in claimed:
+                        continue
+                    issues.append(
+                        IssueItem(
+                            problem=m.content,
+                            owner=name_map.get(m.sender, ""),
+                            status="已解决" if "已解决" in m.content else "处理中",
+                            source="auto",
+                            msg_key=key,
+                        )
+                    )
+
+        for row in manual_rows:
+            issues.append(
+                IssueItem(
+                    problem=row["problem"],
+                    solution=row["solution"],
+                    owner=row["owner"],
+                    status=row["status"],
+                    source="manual",
+                    issue_id=int(row["id"]),
+                    msg_key=row["msg_key"],
+                )
+            )
+    return issues
+
+
 def run_pipeline(
     config: Config,
     *,
@@ -278,8 +400,11 @@ def run_pipeline(
         return False
 
     members = formatter.aggregate(config.members, commits, tasks, messages)
+    tomorrow_plans = _collect_tomorrow_plans(config, today)
+    issues = _collect_issues(config, since, until, messages, today)
     report = formatter.generate(
-        members, today, config.team_name, failed_sources=failed
+        members, today, config.team_name, failed_sources=failed,
+        tomorrow_plans=tomorrow_plans, issues=issues,
     )
 
     with ReportStorage(config["storage"]["sqlite_path"]) as storage:

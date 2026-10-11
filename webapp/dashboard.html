@@ -175,9 +175,12 @@ svg{display:block}
 .record-title{font-size:14px;line-height:1.5;overflow-wrap:anywhere}
 .record-meta{display:flex;align-items:center;gap:12px;font-size:12px;color:var(--muted);flex-wrap:wrap;font-variant-numeric:tabular-nums}
 
-/* 子任务 */
-.subtasks{margin-top:8px;padding-left:12px;border-left:2px solid var(--border)}
-.subtask-progress{font-size:12px;color:var(--accent);font-weight:600;margin-bottom:6px}
+/* 子任务：下拉式折叠面板 */
+.task-toggle{display:inline-flex;align-items:center;gap:6px;margin-top:6px;width:fit-content;padding:2px 10px;font-size:12px;font-weight:600;color:var(--accent);background:var(--accent-weak);border:none;border-radius:6px;cursor:pointer}
+.task-toggle:hover{filter:brightness(.96)}
+.toggle-arrow{display:inline-block;font-size:10px;transition:transform .18s ease}
+.task-record.subtasks-open .toggle-arrow{transform:rotate(90deg)}
+.subtasks{margin-top:6px;padding-left:12px;border-left:2px solid var(--border)}
 .subtask-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
 .subtask-item{display:flex;align-items:center;gap:8px;font-size:13px;flex-wrap:wrap}
 .subtask-icon{flex:none}
@@ -196,6 +199,37 @@ svg{display:block}
 .failed{display:flex;align-items:center;gap:8px;color:var(--danger);font-size:14px}
 
 .page-foot{padding:10px 2px 2px;border-top:1px solid var(--border);font-size:12px;color:var(--muted);line-height:1.5}
+
+/* 明日计划卡片 */
+.plan-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-card);box-shadow:var(--shadow);overflow:hidden}
+.plan-head{display:flex;align-items:center;gap:8px;padding:14px 20px;border-bottom:1px solid var(--border)}
+.plan-head svg{color:var(--accent);flex:none}
+.plan-title{font-size:15px;font-weight:600}
+.plan-count{margin-left:auto;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;background:var(--surface-2);border:1px solid var(--border);border-radius:999px;padding:1px 8px}
+.plan-list{list-style:none;margin:0;padding:10px 20px 4px;display:flex;flex-direction:column;gap:8px}
+.plan-item{display:flex;align-items:flex-start;gap:8px;font-size:14px;line-height:1.55}
+.plan-owner{flex:none;font-size:12px;color:var(--accent);background:var(--accent-weak);border-radius:6px;padding:1px 8px;white-space:nowrap;margin-top:1px}
+.plan-text{flex:1;min-width:0;overflow-wrap:anywhere}
+.plan-del{flex:none;width:24px;height:24px;display:grid;place-items:center;border:1px solid var(--border);background:var(--surface);color:var(--muted);border-radius:6px;cursor:pointer;font-size:12px;line-height:1}
+.plan-del:hover{color:var(--danger);border-color:var(--danger)}
+.plan-form{display:flex;flex-wrap:wrap;gap:8px;padding:12px 20px 16px}
+.plan-input{flex:1;min-width:180px;border:1px solid var(--border);background:var(--surface-2);color:var(--ink);border-radius:var(--radius-ctl);padding:8px 12px;font:inherit;font-size:14px}
+.plan-input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.plan-select{border:1px solid var(--border);background:var(--surface-2);color:var(--ink);border-radius:var(--radius-ctl);padding:8px 10px;font:inherit;font-size:14px;cursor:pointer}
+.plan-add{border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);border-radius:var(--radius-ctl);padding:8px 16px;font:inherit;font-size:14px;font-weight:600;cursor:pointer}
+.plan-add:hover{filter:brightness(1.06)}
+.plan-empty{padding:14px 20px 4px;color:var(--muted);font-size:14px;display:flex;align-items:center;gap:8px}
+
+/* 问题与解决卡片（复用 plan-* 基础样式） */
+.issue-status{flex:none;font-size:12px;border-radius:6px;padding:1px 8px;white-space:nowrap;margin-top:1px;border:1px solid transparent}
+.issue-status.ok{color:#16a34a;background:rgba(22,163,74,.12)}
+.issue-status.doing{color:#d97706;background:rgba(217,119,6,.12)}
+.issue-solution{color:var(--muted)}
+.issue-toggle:hover{color:var(--accent);border-color:var(--accent)}
+.claim-item{display:block}
+.claim-form{display:flex;flex-direction:column;gap:8px}
+.claim-problem{font-size:14px;font-weight:600;color:var(--ink);overflow-wrap:anywhere}
+.claim-row{display:flex;flex-wrap:wrap;gap:8px}
 
 /* focus */
 :where(.icon-btn,.date-btn,.chip):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -263,6 +297,8 @@ svg{display:block}
       <div class="notice" id="notice" role="status" hidden></div>
       <div class="filters" id="filters" aria-label="按成员筛选"></div>
       <div class="members" id="members"></div>
+      <section id="planCard" aria-label="明日计划"></section>
+      <section id="issueCard" aria-label="问题与解决"></section>
       <footer class="page-foot" id="pageFoot"></footer>
     </div>
   </main>
@@ -317,7 +353,9 @@ svg{display:block}
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var els = {
     app: $("#app"), dateList: $("#dateList"), stats: $("#stats"), notice: $("#notice"),
-    filters: $("#filters"), members: $("#members"), pageTitle: $("#pageTitle"),
+    filters: $("#filters"), members: $("#members"), planCard: $("#planCard"),
+    issueCard: $("#issueCard"),
+    pageTitle: $("#pageTitle"),
     pageSub: $("#pageSub"), pageFoot: $("#pageFoot"), themeBtn: $("#themeBtn"),
     themeIcon: $("#themeIcon"), menuBtn: $("#menuBtn"), scrim: $("#scrim"), sidebar: $("#sidebar")
   };
@@ -347,7 +385,9 @@ svg{display:block}
 
   /* --- 顶部信息 --- */
   function renderHeader(report) {
-    els.pageTitle.textContent = report.team_name + " · 工作日报";
+    els.pageTitle.textContent = report.members.length === 1
+      ? report.members[0].name + "的工作日报"
+      : report.team_name + " · 工作日报";
     els.pageSub.textContent = report.date + " " + weekday(report.date, "long") + " · 生成于 " + report.generated_at;
     els.pageFoot.innerHTML = "智能日报生成器 · 浏览器看板，数据来源：GitHub · 飞书任务 · 飞书消息。" +
       "<br>邮件通道使用项目原有的内联样式模板。";
@@ -364,7 +404,7 @@ svg{display:block}
       { icon: "branch", label: "代码提交", value: commits },
       { icon: "check", label: "任务变更", value: tasks },
       { icon: "chat", label: "协作沟通", value: messages },
-      { icon: "users", label: "活跃成员", value: active + " / " + report.members.length }
+      { icon: "users", label: "活跃成员", value: active }
     ];
     els.stats.innerHTML = items.map(function (it) {
       return '<div class="stat od-stat">' +
@@ -411,22 +451,7 @@ svg{display:block}
       "</div></li>";
   }
   function taskItem(t) {
-    var subtasksHtml = "";
-    if (t.subtasks && t.subtasks.length > 0) {
-      var progress = t.progress || "";
-      subtasksHtml = '<div class="subtasks">' +
-        '<div class="subtask-progress">📋 子任务 ' + esc(progress) + ' 已完成</div>' +
-        '<ul class="subtask-list">' +
-        t.subtasks.map(function(s) {
-          var icon = s.status_to === "已完成" ? "✅" : "⬜";
-          return '<li class="subtask-item">' +
-            '<span class="subtask-icon">' + icon + '</span>' +
-            '<span class="subtask-title">' + esc(s.title) + '</span>' +
-            '<span class="subtask-status">' + esc(s.status_to) + '</span>' +
-            '</li>';
-        }).join("") +
-        '</ul></div>';
-    }
+    var hasSubs = t.subtasks && t.subtasks.length > 0;
     var statusHtml;
     var metaHtml = "";
     if (t.status_from) {
@@ -438,9 +463,30 @@ svg{display:block}
     } else {
       statusHtml = '<span class="status-to">' + esc(t.status_to) + "</span>";
     }
-    return '<li class="record">' +
+    var toggleHtml = "";
+    var subtasksHtml = "";
+    if (hasSubs) {
+      toggleHtml =
+        '<button class="task-toggle" type="button" aria-expanded="false">' +
+        '<span class="toggle-arrow" aria-hidden="true">▶</span>' +
+        "<span>子任务 " + esc(t.progress || "") + "</span>" +
+        "</button>";
+      subtasksHtml =
+        '<div class="subtasks" hidden><ul class="subtask-list">' +
+        t.subtasks.map(function(s) {
+          var icon = s.status_to === "已完成" ? "✅" : "⬜";
+          return '<li class="subtask-item">' +
+            '<span class="subtask-icon">' + icon + '</span>' +
+            '<span class="subtask-title">' + esc(s.title) + '</span>' +
+            '<span class="subtask-status">' + esc(s.status_to) + '</span>' +
+            '</li>';
+        }).join("") +
+        '</ul></div>';
+    }
+    return '<li class="record task-record' + (hasSubs ? " has-subtasks" : "") + '">' +
       '<div class="status">' + statusHtml + "</div>" +
       '<span class="record-title">' + esc(t.title) + "</span>" +
+      toggleHtml +
       subtasksHtml +
       metaHtml +
       "</li>";
@@ -502,6 +548,128 @@ svg{display:block}
     els.members.innerHTML = list.map(function (m) { return memberCard(m, report); }).join("");
   }
 
+  /* --- 明日计划卡片 --- */
+  function planItem(p) {
+    var owner = '<span class="plan-owner">' + esc(p.owner || "团队") + "</span>";
+    var delBtn = p.source === "manual" && p.id
+      ? '<button class="plan-del" type="button" data-id="' + p.id + '" aria-label="删除该计划">✕</button>'
+      : "";
+    return '<li class="plan-item">' + owner +
+      '<span class="plan-text">' + esc(p.title) + "</span>" +
+      delBtn + "</li>";
+  }
+  function renderPlans(report) {
+    var plans = report.tomorrow_plans || [];
+    var prevInput = $("#planInput");
+    var prevText = prevInput ? prevInput.value : "";
+    var body = plans.length
+      ? '<ul class="plan-list">' + plans.map(planItem).join("") + "</ul>"
+      : '<p class="plan-empty">' + icon("inbox", 16) + "<span>暂无明日计划，可在下方添加</span></p>";
+    var options = report.members.map(function (m) {
+      return '<option value="' + esc(m.name) + '">' + esc(m.name) + "</option>";
+    }).join("");
+    els.planCard.innerHTML =
+      '<div class="plan-card">' +
+        '<div class="plan-head">' + icon("calendar", 18) +
+          '<span class="plan-title">明日计划</span>' +
+          '<span class="plan-count">' + plans.length + " 项</span>" +
+        "</div>" +
+        body +
+        '<form class="plan-form" id="planForm">' +
+          '<input class="plan-input" id="planInput" type="text" maxlength="100" placeholder="添加明天要做的事…" aria-label="计划内容">' +
+          '<select class="plan-select" id="planOwner" aria-label="负责人">' + options + "</select>" +
+          '<button class="plan-add" type="submit">添加</button>' +
+        "</form>" +
+      "</div>";
+    if (prevText) { $("#planInput").value = prevText; }
+  }
+
+  /* --- 问题与解决卡片 --- */
+  var claimKey = "";  // 处于「补充方案」编辑态的自动条目 msg_key
+
+  function claimForm(it) {
+    var ok = it.status === "已解决";
+    return '<li class="plan-item claim-item">' +
+      '<form class="claim-form" id="issueClaimForm">' +
+        '<span class="claim-problem">' + esc(it.problem) + "</span>" +
+        '<div class="claim-row">' +
+          '<input class="plan-input" id="issueClaimSolution" type="text" maxlength="100" placeholder="解决方案" aria-label="解决方案" value="' + esc(it.solution || "") + '">' +
+          '<select class="plan-select" id="issueClaimStatus" aria-label="状态">' +
+            '<option value="处理中"' + (ok ? "" : " selected") + ">⏳ 处理中</option>" +
+            '<option value="已解决"' + (ok ? " selected" : "") + ">✅ 已解决</option>" +
+          "</select>" +
+          '<button class="plan-add issue-claim-save" type="submit">保存</button>' +
+          '<button class="plan-del issue-claim-cancel" type="button">取消</button>' +
+        "</div>" +
+      "</form></li>";
+  }
+  function issueItem(it) {
+    var ok = it.status === "已解决";
+    var status = '<span class="issue-status ' + (ok ? "ok" : "doing") + '">' +
+      (ok ? "✅ 已解决" : "⏳ 处理中") + "</span>";
+    var text = esc(it.problem) +
+      (it.solution ? '<span class="issue-solution"> → ' + esc(it.solution) + "</span>" : "");
+    var ops = "";
+    if (it.source === "manual" && it.id) {
+      var next = ok ? "处理中" : "已解决";
+      ops =
+        '<button class="plan-del issue-toggle" type="button" data-id="' + it.id +
+          '" data-status="' + next + '" aria-label="' + (ok ? "标记为处理中" : "标记为已解决") + '">' +
+          (ok ? "↩" : "✔") + "</button>" +
+        '<button class="plan-del" type="button" data-id="' + it.id + '" aria-label="删除该问题">✕</button>';
+    } else if (it.source !== "manual" && it.msg_key) {
+      ops = '<button class="plan-del issue-claim" type="button" data-key="' + esc(it.msg_key) +
+        '" aria-label="补充解决方案">补充方案</button>';
+    }
+    return '<li class="plan-item">' +
+      '<span class="plan-text">' + text + "</span>" +
+      status + ops + "</li>";
+  }
+  function renderIssues(report) {
+    var issues = report.issues || [];
+    var prevProblem = $("#issueProblem"), prevSolution = $("#issueSolution"), prevOwner = $("#issueOwnerSel");
+    var prevP = prevProblem ? prevProblem.value : "";
+    var prevS = prevSolution ? prevSolution.value : "";
+    var prevO = prevOwner ? prevOwner.value : "";
+    // 认领表单在轮询重渲染间保留已填内容（同主表单策略）
+    var prevClaimS = "", prevClaimSt = "";
+    if (claimKey) {
+      var pcS = $("#issueClaimSolution"), pcSt = $("#issueClaimStatus");
+      if (pcS) { prevClaimS = pcS.value; }
+      if (pcSt) { prevClaimSt = pcSt.value; }
+    }
+    var body = issues.length
+      ? '<ul class="plan-list">' + issues.map(function (it) {
+          return (claimKey && it.msg_key === claimKey) ? claimForm(it) : issueItem(it);
+        }).join("") + "</ul>"
+      : '<p class="plan-empty">' + icon("alert", 16) + "<span>今日暂无问题记录，可在下方添加</span></p>";
+    var options = report.members.map(function (m) {
+      return '<option value="' + esc(m.name) + '">' + esc(m.name) + "</option>";
+    }).join("");
+    els.issueCard.innerHTML =
+      '<div class="plan-card">' +
+        '<div class="plan-head">' + icon("alert", 18) +
+          '<span class="plan-title">问题与解决</span>' +
+          '<span class="plan-count">' + issues.length + " 项</span>" +
+        "</div>" +
+        body +
+        '<form class="plan-form" id="issueForm">' +
+          '<input class="plan-input" id="issueProblem" type="text" maxlength="100" placeholder="遇到的问题…" aria-label="问题描述">' +
+          '<input class="plan-input" id="issueSolution" type="text" maxlength="100" placeholder="解决方案（可选）" aria-label="解决方案">' +
+          '<select class="plan-select" id="issueOwnerSel" aria-label="负责人">' + options + "</select>" +
+          '<button class="plan-add" type="submit">添加</button>' +
+        "</form>" +
+      "</div>";
+    if (prevP) { $("#issueProblem").value = prevP; }
+    if (prevS) { $("#issueSolution").value = prevS; }
+    if (prevO) { $("#issueOwnerSel").value = prevO; }
+    if (claimKey) {
+      var cS = $("#issueClaimSolution"), cSt = $("#issueClaimStatus");
+      if (cS && prevClaimS) { cS.value = prevClaimS; }
+      if (cSt && prevClaimSt) { cSt.value = prevClaimSt; }
+    }
+  }
+
   function renderAll() {
     var report = currentReport();
     renderDateList();
@@ -510,6 +678,8 @@ svg{display:block}
     renderNotice(report);
     renderFilters(report);
     renderMembers(report);
+    renderPlans(report);
+    renderIssues(report);
   }
 
   /* --- 主题 --- */
@@ -553,6 +723,172 @@ svg{display:block}
     state.member = chip.getAttribute("data-member");
     renderFilters(currentReport());
     renderMembers(currentReport());
+  });
+  /* 任务子任务折叠面板：点击切换展开/收起 */
+  els.members.addEventListener("click", function (e) {
+    var btn = e.target.closest(".task-toggle");
+    if (!btn) return;
+    var li = btn.closest(".task-record");
+    if (!li) return;
+    var panel = li.querySelector(".subtasks");
+    if (!panel) return;
+    var willOpen = panel.hidden;
+    panel.hidden = !willOpen;
+    li.classList.toggle("subtasks-open", willOpen);
+    btn.setAttribute("aria-expanded", String(willOpen));
+  });
+
+  /* 明日计划：添加 / 删除（乐观更新：改本地数据立即重渲染，下一轮自动刷新与服务端同步） */
+  els.planCard.addEventListener("submit", function (e) {
+    var form = e.target.closest("#planForm");
+    if (!form) return;
+    e.preventDefault();
+    var input = $("#planInput");
+    var title = (input && input.value || "").trim();
+    if (!title) { return; }
+    var owner = $("#planOwner").value;
+    fetch("api/plans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: title, owner: owner })
+    }).then(function (r) { return r.json(); }).then(function (data) {
+      if (data && data.code === 0) {
+        var report = currentReport();
+        report.tomorrow_plans = (report.tomorrow_plans || []).concat([{
+          title: title, owner: owner, source: "manual", id: data.id
+        }]);
+        if (input) { input.value = ""; }
+        renderPlans(report);
+      }
+    }).catch(function () { /* 静默等下一轮 */ });
+  });
+  els.planCard.addEventListener("click", function (e) {
+    var btn = e.target.closest(".plan-del");
+    if (!btn) return;
+    var id = btn.getAttribute("data-id");
+    if (!id) return;
+    fetch("api/plans?id=" + encodeURIComponent(id), { method: "DELETE" })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data && data.code === 0) {
+          var report = currentReport();
+          report.tomorrow_plans = (report.tomorrow_plans || []).filter(function (p) {
+            return !(p.source === "manual" && p.id === Number(id));
+          });
+          renderPlans(report);
+        }
+      })
+      .catch(function () { /* 静默等下一轮 */ });
+  });
+
+  /* 问题与解决：认领补充方案 / 添加 / 状态切换 / 删除（乐观更新，同明日计划模式） */
+  els.issueCard.addEventListener("submit", function (e) {
+    var claimFormEl = e.target.closest("#issueClaimForm");
+    if (claimFormEl) {
+      e.preventDefault();
+      var src = (currentReport().issues || []).find(function (x) {
+        return x.msg_key === claimKey;
+      });
+      if (!src) { claimKey = ""; renderIssues(currentReport()); return; }
+      var solution = ($("#issueClaimSolution") && $("#issueClaimSolution").value || "").trim();
+      var status = $("#issueClaimStatus") ? $("#issueClaimStatus").value : "处理中";
+      fetch("api/issues", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          problem: src.problem, solution: solution, owner: src.owner,
+          status: status, msg_key: src.msg_key
+        })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        if (data && data.code === 0) {
+          var report = currentReport();
+          report.issues = (report.issues || [])
+            .filter(function (x) { return x.msg_key !== claimKey; })
+            .concat([{
+              problem: src.problem, solution: solution, owner: src.owner,
+              status: status, source: "manual", id: data.id, msg_key: src.msg_key
+            }]);
+          claimKey = "";
+          renderIssues(report);
+        }
+      }).catch(function () { /* 静默等下一轮 */ });
+      return;
+    }
+    var form = e.target.closest("#issueForm");
+    if (!form) return;
+    e.preventDefault();
+    var pInput = $("#issueProblem"), sInput = $("#issueSolution");
+    var problem = (pInput && pInput.value || "").trim();
+    if (!problem) { return; }
+    var solution = (sInput && sInput.value || "").trim();
+    var owner = $("#issueOwnerSel").value;
+    fetch("api/issues", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ problem: problem, solution: solution, owner: owner })
+    }).then(function (r) { return r.json(); }).then(function (data) {
+      if (data && data.code === 0) {
+        var report = currentReport();
+        report.issues = (report.issues || []).concat([{
+          problem: problem, solution: solution, owner: owner,
+          status: "处理中", source: "manual", id: data.id
+        }]);
+        if (pInput) { pInput.value = ""; }
+        if (sInput) { sInput.value = ""; }
+        renderIssues(report);
+      }
+    }).catch(function () { /* 静默等下一轮 */ });
+  });
+  els.issueCard.addEventListener("click", function (e) {
+    var claimBtn = e.target.closest(".issue-claim");
+    if (claimBtn) {
+      claimKey = claimBtn.getAttribute("data-key") || "";
+      renderIssues(currentReport());
+      return;
+    }
+    if (e.target.closest(".issue-claim-cancel")) {
+      claimKey = "";
+      renderIssues(currentReport());
+      return;
+    }
+    var toggle = e.target.closest(".issue-toggle");
+    if (toggle) {
+      var tid = toggle.getAttribute("data-id");
+      var status = toggle.getAttribute("data-status");
+      fetch("api/issues?id=" + encodeURIComponent(tid), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: status })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        if (data && data.code === 0) {
+          var report = currentReport();
+          report.issues = (report.issues || []).map(function (it) {
+            return (it.source === "manual" && it.id === Number(tid))
+              ? { problem: it.problem, solution: it.solution, owner: it.owner,
+                  status: status, source: it.source, id: it.id }
+              : it;
+          });
+          renderIssues(report);
+        }
+      }).catch(function () { /* 静默等下一轮 */ });
+      return;
+    }
+    var btn = e.target.closest(".plan-del");
+    if (!btn) return;
+    var id = btn.getAttribute("data-id");
+    if (!id) return;
+    fetch("api/issues?id=" + encodeURIComponent(id), { method: "DELETE" })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data && data.code === 0) {
+          var report = currentReport();
+          report.issues = (report.issues || []).filter(function (it) {
+            return !(it.source === "manual" && it.id === Number(id));
+          });
+          renderIssues(report);
+        }
+      })
+      .catch(function () { /* 静默等下一轮 */ });
   });
 
   var lastFingerprint = "";

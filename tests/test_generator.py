@@ -7,8 +7,10 @@ from datetime import datetime, timezone
 from generator import formatter
 from shared.models import (
     CommitRecord,
+    IssueItem,
     MemberReport,
     MessageRecord,
+    PlanItem,
     TaskRecord,
 )
 
@@ -159,3 +161,75 @@ def test_subtask_progress_rendered_in_markdown_and_html() -> None:
     assert "📋 子任务 1/2 已完成" in report.html
     assert "✅ 写采集（已完成）" in report.html
     assert "⬜ 写模板（进行中）" in report.html
+
+
+def test_markdown_has_tomorrow_plan_section() -> None:
+    reports = formatter.aggregate(_MEMBERS_CONFIG, [], [], [])
+    report = formatter.generate(reports, _DAY, "研发一组")
+
+    assert "## 明日计划" in report.markdown
+    assert "暂无" in report.markdown.split("## 明日计划", maxsplit=1)[1]
+
+
+def test_tomorrow_plans_rendered_in_markdown_and_html() -> None:
+    plans = [
+        PlanItem(title="完成接口联调", owner="张三", source="auto"),
+        PlanItem(title="整理周报", owner="", source="manual"),
+    ]
+    reports = formatter.aggregate(_MEMBERS_CONFIG, [], [], [])
+    report = formatter.generate(reports, _DAY, "研发一组", tomorrow_plans=plans)
+
+    plan_section = report.markdown.split("## 明日计划", maxsplit=1)[1]
+    assert "📌 张三：完成接口联调" in plan_section
+    assert "📌 团队：整理周报" in plan_section
+
+    assert "明日计划" in report.html
+    assert "张三：完成接口联调" in report.html
+    assert "团队：整理周报" in report.html
+    assert report.tomorrow_plans == plans
+
+
+def test_issues_rendered_in_markdown_and_html() -> None:
+    issues = [
+        IssueItem(problem="接口报错", solution="已定位修复",
+                  owner="张三", status="已解决", source="manual", issue_id=3),
+        IssueItem(problem="环境卡顿", source="auto"),
+    ]
+    reports = formatter.aggregate(_MEMBERS_CONFIG, [], [], [])
+    report = formatter.generate(reports, _DAY, "研发一组", issues=issues)
+
+    # 板块顺序：协作沟通之后、明日计划之前
+    md = report.markdown
+    assert md.index("### 协作沟通") < md.index("## 问题与解决") < md.index("## 明日计划")
+    section = md.split("## 问题与解决", maxsplit=1)[1].split("## 明日计划", maxsplit=1)[0]
+    assert "✅ 接口报错 → 已定位修复" in section
+    assert "⏳ 环境卡顿 → 方案待定" in section
+
+    assert "问题与解决" in report.html
+    assert "接口报错" in report.html
+    assert "已定位修复" in report.html
+    assert "方案待定" in report.html
+    assert report.issues == issues
+
+
+def test_empty_issues_show_placeholder() -> None:
+    reports = formatter.aggregate(_MEMBERS_CONFIG, [], [], [])
+    report = formatter.generate(reports, _DAY, "研发一组")
+
+    assert "## 问题与解决" in report.markdown
+    assert "暂无" in report.markdown.split("## 问题与解决", maxsplit=1)[1]
+    # HTML 端无条目时整段隐藏（与明日计划行为一致）
+    assert "问题与解决" not in report.html
+
+
+def test_single_member_report_uses_personal_title() -> None:
+    reports = formatter.aggregate(_MEMBERS_CONFIG[:1], [], [], [])
+    report = formatter.generate(reports, _DAY, "研发一组")
+
+    assert report.markdown.startswith("# 张三的工作日报（2026-09-25）")
+    assert "## 张三" not in report.markdown  # 标题已含成员名，不再重复小节标题
+    assert "### 代码提交" in report.markdown
+    assert "## 明日计划" in report.markdown
+
+    assert "张三的工作日报" in report.html
+    assert ">张三</h2>" not in report.html

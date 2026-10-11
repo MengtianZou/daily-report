@@ -49,13 +49,47 @@ def test_report_to_dict_matches_dashboard_contract() -> None:
     }
 
 
+def test_tomorrow_plans_serialize_with_owner_and_source() -> None:
+    data = report_to_dict(sample_report())
+
+    assert data["tomorrow_plans"] == [
+        {"title": "继续推进飞书任务采集", "owner": "刘政剑", "source": "auto", "id": 0},
+        {"title": "整理周报", "owner": "", "source": "manual", "id": 7},
+    ]
+
+
+def test_issues_serialize_with_status_and_owner() -> None:
+    data = report_to_dict(sample_report())
+
+    assert data["issues"] == [
+        {
+            "problem": "GitHub 限流导致采集失败",
+            "solution": "",
+            "owner": "",
+            "status": "处理中",
+            "source": "auto",
+            "id": 0,
+            "msg_key": "ou_x|2026-09-26T10:00:00+00:00",
+        },
+        {
+            "problem": "模板字段缺失",
+            "solution": "补齐 data_json 字段",
+            "owner": "刘政剑",
+            "status": "已解决",
+            "source": "manual",
+            "id": 9,
+            "msg_key": "",
+        },
+    ]
+
+
 def test_empty_github_username_serializes_to_null() -> None:
     data = report_to_dict(sample_report())
-    chen = data["members"][1]
-    assert chen["github_username"] is None
-    assert chen["commits"] == []
-    assert chen["messages"][0]["content"] == "上线前跑 --check"
-    assert chen["messages"][0]["time"] == "17:50"
+    lisi = data["members"][1]
+    assert lisi["github_username"] is None
+    assert lisi["commits"] == []
+    assert lisi["messages"][0]["content"] == "上线前跑 --check"
+    assert lisi["messages"][0]["time"] == "17:50"
 
 
 def test_failed_sources_are_carried() -> None:

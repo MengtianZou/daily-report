@@ -9,9 +9,6 @@ members:
   - name: "刘政剑"
     github: "chenpingan6158-a11y"
     lark: "ou_10704e49a5f499b51cd710830154549c"
-  - name: "陈平安"
-    github:
-    lark: "ou_6f8f60d57bbf26a474bad270ae9a3f44"
 
 
 # GitHub / GitHub Enterprise 数据采集
@@ -41,6 +38,8 @@ lark_message:
   chat_name: "SDD测试"
   # 仅保留包含以下任一关键词的消息
   keywords: ["上线", "bug", "需求", "联调", "发布", "阻塞", "review"]
+  # 「问题与解决」板块自动提取关键词：含以下任一词的群消息进入问题板块（与协作沟通自动去重）
+  issue_keywords: ["问题", "阻塞", "报错", "失败", "bug"]
   # 敏感词黑名单：命中即过滤，不进入日报
   sensitive_words: ["薪资", "工资", "绩效", "裁员", "辞退"]
   timeout: 10
@@ -71,8 +70,8 @@ storage:
 # 工作日与调度
 schedule:
   # 每日自动推送时间（HH:MM，24 小时制）；看板服务运行期间到点自动采集并推送日报
-  push_time: "14:25"
+  push_time: "10:35"
   # 额外节假日（YYYY-MM-DD）；周末始终跳过；安装 chinesecalendar 后法定节假日自动识别
   holidays: []
   # 调休上班日（YYYY-MM-DD）
-  workdays: []
+  workdays: ["2026-10-11"]

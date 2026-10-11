@@ -12,3 +12,11 @@ __pycache__/
 # 本地数据与导出的日报页面
 data/*.db
 data/report-*.html
+
+# IDE 与编辑器配置
+.idea/
+.vscode/
+
+# 运行日志
+service_log.txt
+*.log
