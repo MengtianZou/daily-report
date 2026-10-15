@@ -53,8 +53,26 @@ _LIST = [
 ]
 
 _DETAIL = {
+    "html_url": "https://github.com/org/repo/commit/abc123",
     "stats": {"additions": 10, "deletions": 2, "total": 12},
-    "files": [{"filename": "a.py"}, {"filename": "b.py"}],
+    "files": [
+        {
+            "filename": "a.py",
+            "status": "added",
+            "additions": 10,
+            "deletions": 0,
+            "patch": "@@ -0,0 +1,10 @@\n+print('hi')\n",
+            "blob_url": "https://github.com/org/repo/blob/abc123/a.py",
+        },
+        {
+            "filename": "b.py",
+            "status": "modified",
+            "additions": 0,
+            "deletions": 2,
+            "patch": "@@ -1,2 +1,0 @@\n-old\n",
+            "blob_url": "https://github.com/org/repo/blob/abc123/b.py",
+        },
+    ],
 }
 
 
@@ -83,6 +101,29 @@ def test_collect_returns_commit_records_with_all_fields() -> None:
     assert record.additions == 10
     assert record.deletions == 2
     assert record.files_changed == 2
+    assert record.html_url == "https://github.com/org/repo/commit/abc123"
+    assert len(record.files) == 2
+    added_file = record.files[0]
+    assert added_file.filename == "a.py"
+    assert added_file.status == "added"
+    assert added_file.additions == 10
+    assert "+print('hi')" in added_file.patch
+    assert added_file.blob_url == "https://github.com/org/repo/blob/abc123/a.py"
+
+
+def test_html_url_falls_back_to_constructed_commit_url() -> None:
+    detail = dict(_DETAIL)
+    detail.pop("html_url")
+    fake = FakeHTTP(
+        [
+            ("/commits?", FakeResponse(payload=_LIST)),
+            ("/commits/abc123", FakeResponse(payload=detail)),
+        ]
+    )
+    records = github.collect(
+        ["org/repo"], _SINCE, _UNTIL, http_client=fake, sleeper=_noop_sleep
+    )
+    assert records[0].html_url == "https://github.com/org/repo/commit/abc123"
 
 
 def test_pagination_follows_next_link() -> None:

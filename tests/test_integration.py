@@ -16,7 +16,7 @@ import pytest
 
 import main
 from shared.errors import CollectorError
-from shared.models import CommitRecord, MessageRecord, TaskRecord
+from shared.models import CommitRecord, MessageRecord
 from shared.storage import ReportStorage
 
 _CONFIG = """
@@ -81,15 +81,6 @@ _RECORDS = {
             files_changed=2,
         )
     ],
-    "tasks": [
-        TaskRecord(
-            assignee="ou_zhangsan",
-            title="完成接口联调",
-            status_from="进行中",
-            status_to="已完成",
-            updated_at=datetime(2026, 9, 28, 10, 0, tzinfo=timezone.utc),
-        )
-    ],
     "messages": [
         MessageRecord(
             sender="ou_zhangsan",
@@ -126,19 +117,24 @@ def _patch(monkeypatch, *, mode: str, pushed: list[str]) -> None:
 
     if mode == "all_fail":
         monkeypatch.setattr(main.github, "collect", make_failing("github"))
-        monkeypatch.setattr(main.lark_task, "collect", make_failing("lark_task"))
+        monkeypatch.setattr(
+            main.lark_task, "fetch_daily_tasklist", make_failing("lark_task")
+        )
         monkeypatch.setattr(main.lark_msg, "collect", make_failing("lark_message"))
     elif mode == "empty":
         monkeypatch.setattr(main.github, "collect", make_returning([]))
-        monkeypatch.setattr(main.lark_task, "collect", make_returning([]))
+        monkeypatch.setattr(main.lark_task, "fetch_daily_tasklist",
+                            lambda *a, **k: None)
         monkeypatch.setattr(main.lark_msg, "collect", make_returning([]))
     elif mode == "degraded":
         monkeypatch.setattr(main.github, "collect", make_failing("github"))
-        monkeypatch.setattr(main.lark_task, "collect", make_returning(_RECORDS["tasks"]))
+        monkeypatch.setattr(main.lark_task, "fetch_daily_tasklist",
+                            lambda *a, **k: None)
         monkeypatch.setattr(main.lark_msg, "collect", make_returning(_RECORDS["messages"]))
     else:  # normal
         monkeypatch.setattr(main.github, "collect", make_returning(_RECORDS["commits"]))
-        monkeypatch.setattr(main.lark_task, "collect", make_returning(_RECORDS["tasks"]))
+        monkeypatch.setattr(main.lark_task, "fetch_daily_tasklist",
+                            lambda *a, **k: None)
         monkeypatch.setattr(main.lark_msg, "collect", make_returning(_RECORDS["messages"]))
 
     monkeypatch.setattr(
@@ -171,7 +167,6 @@ def test_integration_normal(config_path, monkeypatch) -> None:
     row = _read_report(config_path)
     assert row is not None
     assert "支持日报推送" in row["markdown"]
-    assert "完成接口联调" in row["markdown"]
     assert "功能已上线" in row["markdown"]
     assert "<html" in row["html"]
 
@@ -189,7 +184,6 @@ def test_integration_degraded_single_source_failure(config_path, monkeypatch) ->
     row = _read_report(config_path)
     assert row is not None
     assert "数据获取失败" in row["markdown"]
-    assert "完成接口联调" in row["markdown"]
 
 
 def test_integration_empty_day(config_path, monkeypatch) -> None:

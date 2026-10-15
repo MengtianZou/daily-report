@@ -28,12 +28,14 @@ github:
   per_page: 30
   timeout: 10                     # 单次请求超时（秒）
 
-# 飞书任务采集
+# 飞书任务（当日任务清单读写）
 lark_task:
   enabled: true
   app_id_env: "LARK_APP_ID"
   app_secret_env: "LARK_APP_SECRET"
   project_id: "proj_xxxxxxxx"
+  # 自动为当天待完成计划创建「M月D日任务清单」（需 task:task:write 权限）
+  auto_create_tasklist: true
   timeout: 10
 
 # 飞书群消息采集
@@ -47,6 +49,10 @@ lark_message:
   keywords: ["上线", "bug", "需求", "联调", "发布", "阻塞", "review"]
   # 「问题与解决」板块自动提取关键词：含以下任一词的群消息进入问题板块（与协作沟通自动去重）
   issue_keywords: ["问题", "阻塞", "报错", "失败", "bug"]
+  # 「明日计划」捕捉关键词：消息以前导词布置计划（如「明天：写周报」）落库，次日进任务清单
+  plan_keywords: ["计划", "明天", "明日", "待办"]
+  # 完成宣告关键词：群内发「完成 xxx」自动打勾当日清单子任务（优先于计划判定）
+  done_keywords: ["完成", "做完", "搞定"]
   # 敏感词黑名单：命中即过滤，不进入日报
   sensitive_words: ["薪资", "工资", "绩效", "裁员", "辞退"]
   timeout: 10
@@ -70,9 +76,33 @@ lark_bot:
   chat_id: "oc_xxxxxxxx"
   timeout: 10
 
+# AI 日报摘要（可选）：调用 OpenAI 兼容接口生成「今日总结」附在日报头部。
+# 未启用 / 未配置 API Key / 接口失败时自动跳过，不影响日报生成（优雅降级）。
+# 国内可直连的供应商：DeepSeek（https://api.deepseek.com/v1）、
+# 通义（https://dashscope.aliyuncs.com/compatible-mode/v1）、
+# 智谱 GLM（https://open.bigmodel.cn/api/paas/v4）；API Key 从环境变量读取。
+ai:
+  enabled: false
+  base_url: "https://api.deepseek.com/v1"
+  model: "deepseek-chat"
+  api_key_env: "DEEPSEEK_API_KEY"
+  timeout: 60
+  max_tokens: 800
+
 # 日报历史存储
 storage:
   sqlite_path: "data/reports.db"
+
+# 看板配置
+dashboard:
+  # 看板服务端口：默认 8000，网址固定为 http://127.0.0.1:8000/ 便于收藏；
+  # 被其他程序占用时可改成别的端口。
+  port: 8000
+  # 看板账号与成员绑定（数据隔离）：键为成员名（须与 members.name 完全一致），
+  # 值为该成员的看板账号名（多个账号可写列表 ["a", "b"]）。
+  # 未出现在映射中的账号登录后看板为空，且不能添加/删除手动条目。
+  member_accounts:
+    张三: zhangsan
 
 # 工作日与调度
 schedule:

@@ -21,7 +21,7 @@ import httpx
 
 from shared.errors import CollectorError
 from shared.logger import get_logger
-from shared.models import CommitRecord
+from shared.models import CommitFile, CommitRecord
 
 logger = get_logger(__name__)
 
@@ -107,7 +107,22 @@ def _build_commit_record(repo: str, summary: dict, detail: dict) -> CommitRecord
     author = author_obj.get("login") or commit_info.get("author", {}).get("name", "")
 
     stats = detail.get("stats", {})
-    files = detail.get("files", [])
+    raw_files = detail.get("files", [])
+    sha = summary.get("sha", "")
+    files = [
+        CommitFile(
+            filename=f.get("filename", ""),
+            status=f.get("status", "modified"),
+            additions=int(f.get("additions", 0)),
+            deletions=int(f.get("deletions", 0)),
+            patch=f.get("patch", "") or "",
+            blob_url=f.get("blob_url", "") or "",
+        )
+        for f in raw_files
+    ]
+    html_url = detail.get("html_url") or (
+        f"https://github.com/{repo}/commit/{sha}" if sha else ""
+    )
     return CommitRecord(
         author=author,
         message=commit_info.get("message", ""),
@@ -116,6 +131,8 @@ def _build_commit_record(repo: str, summary: dict, detail: dict) -> CommitRecord
         additions=int(stats.get("additions", 0)),
         deletions=int(stats.get("deletions", 0)),
         files_changed=len(files),
+        html_url=html_url,
+        files=files,
     )
 
 

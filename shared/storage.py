@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS plans (
     plan_date  TEXT NOT NULL,
     owner      TEXT NOT NULL DEFAULT '',
     title      TEXT NOT NULL,
+    status     TEXT NOT NULL DEFAULT '待完成',
+    msg_key    TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 """
@@ -49,6 +51,22 @@ CREATE TABLE IF NOT EXISTS issues (
 );
 """
 
+_USERS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+"""
+
+_META_SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
 
 class ReportStorage:
     """日报历史的 SQLite 存取。"""
@@ -61,8 +79,11 @@ class ReportStorage:
         self._conn.execute(_SCHEMA)
         self._conn.execute(_PLANS_SCHEMA)
         self._conn.execute(_ISSUES_SCHEMA)
+        self._conn.execute(_USERS_SCHEMA)
+        self._conn.execute(_META_SCHEMA)
         self._migrate_data_json()
         self._migrate_issues_msg_key()
+        self._migrate_plans_v2()
         self._conn.commit()
 
     def _migrate_data_json(self) -> None:
@@ -87,6 +108,22 @@ class ReportStorage:
         if "msg_key" not in columns:
             self._conn.execute(
                 "ALTER TABLE issues ADD COLUMN msg_key TEXT NOT NULL DEFAULT ''"
+            )
+
+    def _migrate_plans_v2(self) -> None:
+        """对一期库幂等添加 plans.status / plans.msg_key 列（群消息任务闭环）。"""
+
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(plans)")
+        }
+        if "status" not in columns:
+            self._conn.execute(
+                "ALTER TABLE plans ADD COLUMN status TEXT NOT NULL DEFAULT '待完成'"
+            )
+        if "msg_key" not in columns:
+            self._conn.execute(
+                "ALTER TABLE plans ADD COLUMN msg_key TEXT NOT NULL DEFAULT ''"
             )
 
     def close(self) -> None:
@@ -157,19 +194,24 @@ class ReportStorage:
         return [json.loads(row["data_json"]) for row in rows]
 
     # ------------------------------------------------------------------
-    # 明日计划（手动条目）
+    # 明日计划（手动条目 + 群消息捕捉）
     # ------------------------------------------------------------------
 
-    def save_plan(self, title: str, owner: str, plan_date: str) -> int:
-        """写入一条手动明日计划，返回其 id。"""
+    def save_plan(
+        self, title: str, owner: str, plan_date: str,
+        status: str = "待完成", msg_key: str = "",
+    ) -> int:
+        """写入一条明日计划条目，返回其 id。msg_key 用于群消息捕捉去重。"""
 
         cursor = self._conn.execute(
-            "INSERT INTO plans (plan_date, owner, title, created_at) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO plans (plan_date, owner, title, status, msg_key, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             (
                 plan_date,
                 owner,
                 title,
+                status,
+                msg_key,
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )
@@ -177,21 +219,82 @@ class ReportStorage:
         return int(cursor.lastrowid)
 
     def iter_plans(self, plan_date: str) -> list[dict]:
-        """返回指定计划日期的全部手动条目（按创建顺序）。"""
+        """返回指定计划日期的全部条目（按创建顺序）。"""
 
         rows = self._conn.execute(
-            "SELECT id, plan_date, owner, title FROM plans "
-            "WHERE plan_date = ? ORDER BY id",
+            "SELECT id, plan_date, owner, title, status, msg_key "
+            "FROM plans WHERE plan_date = ? ORDER BY id",
             (plan_date,),
         ).fetchall()
         return [dict(row) for row in rows]
 
     def delete_plan(self, plan_id: int) -> bool:
-        """按 id 删除手动条目；存在且删除成功返回 True。"""
+        """按 id 删除计划条目；存在且删除成功返回 True。"""
 
         cursor = self._conn.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
         self._conn.commit()
         return cursor.rowcount > 0
+
+    def roll_pending_plans(self, today: str) -> int:
+        """把今天之前所有未完成条目滚动到今天，返回滚动条数。
+
+        未完成计划跨天自动顺延，直到被标完成；已完成行不滚动。
+        """
+
+        cursor = self._conn.execute(
+            "UPDATE plans SET plan_date = ? WHERE plan_date < ? AND status = '待完成'",
+            (today, today),
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
+    def plan_msg_key_exists(self, msg_key: str) -> bool:
+        """判断来源消息键是否已捕捉过，防止同一条群消息重复入计划。"""
+
+        row = self._conn.execute(
+            "SELECT 1 FROM plans WHERE msg_key = ? LIMIT 1", (msg_key,)
+        ).fetchone()
+        return row is not None
+
+    def get_meta(self, key: str) -> str:
+        """读取跨进程共享的键值标记（不存在返回空串）。"""
+
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else ""
+
+    def set_meta(self, key: str, value: str) -> None:
+        """写入跨进程共享的键值标记（upsert）。"""
+
+        self._conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        self._conn.commit()
+
+    def mark_plan_done(self, plan_id: int) -> bool:
+        """按 id 将计划条目标记为已完成；条目存在且更新成功返回 True。"""
+
+        cursor = self._conn.execute(
+            "UPDATE plans SET status = '已完成' WHERE id = ?", (plan_id,)
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def mark_plans_done_by_title(self, title: str) -> int:
+        """把指定标题的全部未完成条目标记为已完成，返回标记条数。
+
+        同标题可能存在多条捕捉记录（不同消息重复布置），完成宣告一并落账。
+        """
+
+        cursor = self._conn.execute(
+            "UPDATE plans SET status = '已完成' WHERE title = ? AND status = '待完成'",
+            (title,),
+        )
+        self._conn.commit()
+        return cursor.rowcount
 
     # ------------------------------------------------------------------
     # 问题与解决（手动条目）
@@ -244,6 +347,33 @@ class ReportStorage:
         cursor = self._conn.execute("DELETE FROM issues WHERE id = ?", (issue_id,))
         self._conn.commit()
         return cursor.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # 看板账号（登录/注册）
+    # ------------------------------------------------------------------
+
+    def create_user(self, username: str, password_hash: str) -> int | None:
+        """创建账号；用户名已存在（UNIQUE 冲突）返回 None。"""
+
+        created_at = datetime.now().isoformat(timespec="seconds")
+        try:
+            cursor = self._conn.execute(
+                "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+                (username, password_hash, created_at),
+            )
+        except sqlite3.IntegrityError:
+            return None
+        self._conn.commit()
+        return int(cursor.lastrowid)
+
+    def get_user_by_username(self, username: str) -> dict | None:
+        """按用户名查询账号；不存在返回 None。"""
+
+        row = self._conn.execute(
+            "SELECT id, username, password_hash, created_at FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+        return dict(row) if row else None
 
     # ------------------------------------------------------------------
     # 日报 data_json 局部更新（看板写操作后同步手动条目）

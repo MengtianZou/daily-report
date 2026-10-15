@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from dashboard_helpers import sample_report
-from shared.models import TaskRecord
+from shared.models import CommitFile, CommitRecord, MemberReport, TaskRecord
 from shared.serializer import report_to_dict
 
 
@@ -29,6 +29,8 @@ def test_report_to_dict_matches_dashboard_contract() -> None:
         "deletions": 32,
         "files_changed": 6,
         "time": "10:24",
+        "url": "",
+        "files": [],
     }
 
     task = liu["tasks"][0]
@@ -90,6 +92,67 @@ def test_empty_github_username_serializes_to_null() -> None:
     assert lisi["commits"] == []
     assert lisi["messages"][0]["content"] == "上线前跑 --check"
     assert lisi["messages"][0]["time"] == "17:50"
+
+
+def _commit_with_files(*files: CommitFile, additions: int) -> CommitRecord:
+    return CommitRecord(
+        author="zhangsan",
+        message="feat: 小改动",
+        timestamp=datetime(2026, 9, 26, 2, 0, tzinfo=timezone.utc),
+        repo="org/repo",
+        additions=additions,
+        deletions=0,
+        files_changed=len(files),
+        html_url="https://github.com/org/repo/commit/sha1",
+        files=list(files),
+    )
+
+
+def test_commit_small_diff_serializes_added_lines() -> None:
+    small = CommitFile(
+        filename="config.py",
+        status="added",
+        additions=2,
+        deletions=0,
+        patch="@@ -0,0 +1,2 @@\n+A = 1\n+B = 2\n",
+        blob_url="https://github.com/org/repo/blob/sha1/config.py",
+    )
+    member = MemberReport(name="张三", github_username="zhangsan", commits=[_commit_with_files(small, additions=2)])
+    report = sample_report()
+    report.members = [member]
+
+    commit = report_to_dict(report)["members"][0]["commits"][0]
+    assert commit["url"] == "https://github.com/org/repo/commit/sha1"
+    assert commit["files"] == [
+        {
+            "filename": "config.py",
+            "status": "added",
+            "additions": 2,
+            "deletions": 0,
+            "url": "https://github.com/org/repo/blob/sha1/config.py",
+            "added": ["A = 1", "B = 2"],
+        }
+    ]
+
+
+def test_commit_large_diff_serializes_links_only() -> None:
+    patch = "@@ -0,0 +1,21 @@\n" + "\n".join(f"+LINE_{i}" for i in range(21)) + "\n"
+    big = CommitFile(
+        filename="big.py",
+        status="added",
+        additions=21,
+        deletions=0,
+        patch=patch,
+        blob_url="https://github.com/org/repo/blob/sha1/big.py",
+    )
+    member = MemberReport(name="张三", github_username="zhangsan", commits=[_commit_with_files(big, additions=21)])
+    report = sample_report()
+    report.members = [member]
+
+    commit = report_to_dict(report)["members"][0]["commits"][0]
+    assert commit["files"][0]["filename"] == "big.py"
+    assert commit["files"][0]["url"] == "https://github.com/org/repo/blob/sha1/big.py"
+    assert commit["files"][0]["added"] == []  # 改动过大不下发代码
 
 
 def test_failed_sources_are_carried() -> None:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from generator.diffview import inline_groups
 from shared.models import DailyReport
 
 
@@ -25,21 +26,51 @@ def report_to_dict(report: DailyReport) -> dict:
     members: list[dict] = []
     for member in report.members:
         github_username = member.github_username or None
+        commit_dicts = []
+        for c in member.commits:
+            groups = inline_groups(c)
+            if groups:
+                files = [
+                    {
+                        "filename": f.filename,
+                        "status": f.status,
+                        "additions": f.additions,
+                        "deletions": f.deletions,
+                        "url": f.blob_url,
+                        "added": added,
+                    }
+                    for f, added in groups
+                ]
+            else:
+                # 改动过大：只给文件链接，不下发代码内容
+                files = [
+                    {
+                        "filename": f.filename,
+                        "status": f.status,
+                        "additions": f.additions,
+                        "deletions": f.deletions,
+                        "url": f.blob_url,
+                        "added": [],
+                    }
+                    for f in c.files
+                ]
+            commit_dicts.append(
+                {
+                    "repo": c.repo,
+                    "message": c.message,
+                    "additions": c.additions,
+                    "deletions": c.deletions,
+                    "files_changed": c.files_changed,
+                    "time": _hhmm(c.timestamp),
+                    "url": c.html_url,
+                    "files": files,
+                }
+            )
         members.append(
             {
                 "name": member.name,
                 "github_username": github_username,
-                "commits": [
-                    {
-                        "repo": c.repo,
-                        "message": c.message,
-                        "additions": c.additions,
-                        "deletions": c.deletions,
-                        "files_changed": c.files_changed,
-                        "time": _hhmm(c.timestamp),
-                    }
-                    for c in member.commits
-                ],
+                "commits": commit_dicts,
                 "tasks": [
                     {
                         "title": t.title,
@@ -68,11 +99,30 @@ def report_to_dict(report: DailyReport) -> dict:
             }
         )
 
+    task_list_dict: dict | None = None
+    if report.task_list is not None:
+        tl = report.task_list
+        done, total = tl.progress
+        task_list_dict = {
+            "title": tl.title,
+            "guid": tl.guid,
+            "progress": f"{done}/{total}" if total > 0 else "",
+            "subtasks": [
+                {
+                    "title": s.title,
+                    "status_to": s.status_to,
+                }
+                for s in tl.subtasks
+            ],
+        }
+
     return {
         "date": report.date.isoformat(),
         "team_name": report.team_name,
         "generated_at": _hhmm(generated_at) if generated_at else "",
         "failed_sources": list(report.failed_sources),
+        "task_list": task_list_dict,
+        "summary": report.summary,
         "members": members,
         "tomorrow_plans": [
             {

@@ -10,6 +10,18 @@ from datetime import date, datetime
 
 
 @dataclass(slots=True)
+class CommitFile:
+    """提交中单个文件的变更。"""
+
+    filename: str            # 文件路径
+    status: str = "modified"  # added / modified / removed / renamed
+    additions: int = 0
+    deletions: int = 0
+    patch: str = ""           # GitHub unified diff 文本
+    blob_url: str = ""        # 文件在 GitHub 上的查看地址
+
+
+@dataclass(slots=True)
 class CommitRecord:
     """代码提交记录。"""
 
@@ -20,6 +32,8 @@ class CommitRecord:
     additions: int         # 新增行数
     deletions: int         # 删除行数
     files_changed: int     # 变更文件数
+    html_url: str = ""     # 提交在 GitHub 上的查看地址
+    files: list[CommitFile] = field(default_factory=list)  # 变更文件明细
 
 
 @dataclass(slots=True)
@@ -33,6 +47,7 @@ class TaskRecord:
     updated_at: datetime  # 变更时间
     parent_guid: str = ""  # 父任务 GUID，空表示顶层任务
     subtasks: list["TaskRecord"] = field(default_factory=list)  # 子任务列表
+    guid: str = ""         # 任务自身 GUID（飞书写操作定位用）
 
     @property
     def is_subtask(self) -> bool:
@@ -104,3 +119,5 @@ class DailyReport:
     failed_sources: list[str] = field(default_factory=list)  # 失败数据源标识
     tomorrow_plans: list[PlanItem] = field(default_factory=list)  # 明日计划
     issues: list[IssueItem] = field(default_factory=list)  # 问题与解决
+    task_list: TaskRecord | None = None  # 当日任务清单（团队级板块）
+    summary: str = ""  # AI 生成的今日总结（未启用/生成失败时为空，三端均不渲染）

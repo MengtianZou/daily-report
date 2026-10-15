@@ -8,7 +8,7 @@ from email import message_from_string
 from email.header import decode_header, make_header
 
 from notifier import email
-from shared.models import DailyReport
+from shared.models import DailyReport, MemberReport
 
 
 def _make_report() -> DailyReport:
@@ -58,12 +58,23 @@ def test_send_email_success() -> None:
 
     parsed = message_from_string(raw)
     subject = str(make_header(decode_header(parsed["Subject"])))
-    assert subject == "研发一组 工作日报 2026-09-25"  # 主题含日期与团队名
+    assert subject == "研发一组 智能日报 2026-09-25"  # 主题含日期与团队名
 
     html_part = next(
         part for part in parsed.walk() if part.get_content_subtype() == "html"
     )
     assert html_part.get_payload(decode=True).decode().strip() == "<h1>日报</h1>"
+
+
+def test_subject_single_member_uses_teacher_format() -> None:
+    report = _make_report()
+    report.members = [
+        MemberReport(name="刘政剑", github_username="", commits=[], tasks=[], messages=[])
+    ]
+
+    message = email._build_message(report, sender="a@b.c", recipients=["x@y.z"])
+    subject = str(make_header(decode_header(message["Subject"])))
+    assert subject == "研一刘政剑2026-09-25智能日报"
 
 
 def test_send_email_retries_then_returns_false() -> None:

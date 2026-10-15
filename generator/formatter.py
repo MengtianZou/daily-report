@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+from generator.diffview import inline_groups
 from generator.template import render_report_html
 from shared.models import (
     CommitRecord,
@@ -22,9 +23,9 @@ from shared.models import (
 
 # 数据源标识 -> 板块中文名
 _SOURCE_TITLES = {
-    "github": "代码提交",
-    "lark_task": "任务进展",
-    "lark_message": "协作沟通",
+    "github": "github代码提交情况",
+    "lark_task": "今日任务清单",
+    "lark_message": "飞书SDD测试群协作沟通情况",
 }
 
 
@@ -73,30 +74,56 @@ def _render_section(records: list, failed: bool, kind: str) -> list[str]:
     lines: list[str] = []
     if kind == "github":
         for c in records:
+            link = f" [查看提交]({c.html_url})" if c.html_url else ""
             lines.append(
                 f"- `{c.repo}` {c.message}（+{c.additions}/-{c.deletions}，"
-                f"{c.files_changed} 文件，{_hhmm(c.timestamp)}）"
+                f"{c.files_changed} 文件，{_hhmm(c.timestamp)}）{link}"
             )
-    elif kind == "lark_task":
-        for t in records:
-            if t.status_from:
-                lines.append(
-                    f"- {t.status_from} → **{t.status_to}**：{t.title}"
-                    f"（{_hhmm(t.updated_at)}）"
-                )
-            else:
-                # 父任务今日无变更，仅因子任务变更进入日报，展示当前状态即可
-                lines.append(f"- **{t.status_to}**：{t.title}")
-            # 子任务内容与完成程度
-            completed, total = t.progress
-            if total > 0:
-                lines.append(f"  - 子任务进度：**{completed}/{total}** 已完成")
-                for sub in t.subtasks:
-                    status_icon = "✅" if sub.status_to == "已完成" else "⬜"
-                    lines.append(f"    - {status_icon} {sub.title}（{sub.status_to}）")
+            groups = inline_groups(c)
+            if groups:
+                # 小改动：内联展示每个文件的新增行
+                for f, added in groups:
+                    file_link = (
+                        f"[{f.filename}]({f.blob_url})"
+                        if f.blob_url
+                        else f.filename
+                    )
+                    lines.append(
+                        f"  - 📄 {file_link}（+{f.additions}/-{f.deletions}）"
+                    )
+                    for content in added:
+                        lines.append(f"    - + {content}")
+            elif c.files:
+                # 改动过大：不展示代码，仅提供文件跳转链接
+                for f in c.files:
+                    file_link = (
+                        f"[{f.filename}]({f.blob_url})"
+                        if f.blob_url
+                        else f.filename
+                    )
+                    lines.append(f"  - 📄 {file_link}")
     else:
-        for m in records:
-            lines.append(f"- [{m.chat_name}] {m.content}（{_hhmm(m.timestamp)}）")
+        for idx, m in enumerate(records, start=1):
+            lines.append(f"- 沟通记录{idx}：{m.content}（{_hhmm(m.timestamp)}）")
+    return lines
+
+
+def _render_task_list(task_list: TaskRecord | None, failed: bool) -> list[str]:
+    """渲染团队级「今日任务清单」板块行：父任务+进度徽章+子任务勾选态。"""
+
+    if failed:
+        return ["- ⚠️ 数据获取失败"]
+    if task_list is None:
+        return ["暂无"]
+    lines: list[str] = []
+    completed, total = task_list.progress
+    if total > 0:
+        lines.append(f"- 📋 {task_list.title}（**{completed}/{total}** 已完成）")
+        for sub in task_list.subtasks:
+            icon = "✅" if sub.status_to == "已完成" else "⬜"
+            lines.append(f"  - {icon} {sub.title}")
+    else:
+        lines.append(f"- 📋 {task_list.title}")
     return lines
 
 
@@ -107,8 +134,7 @@ def _render_plans(plans: list[PlanItem]) -> list[str]:
         return ["暂无"]
     lines: list[str] = []
     for p in plans:
-        owner = p.owner or "团队"
-        lines.append(f"- 📌 {owner}：{p.title}")
+        lines.append(f"- 📌 {p.title}")
     return lines
 
 
@@ -126,10 +152,10 @@ def _render_issues(issues: list[IssueItem]) -> list[str]:
 
 
 def report_title(members: list[MemberReport], team_name: str) -> str:
-    """日报展示标题：单人日报以「成员名的工作日报」命名，多人用团队名。"""
+    """日报展示标题：单人日报以「成员名的智能日报」命名，多人用团队名。"""
     if len(members) == 1:
-        return f"{members[0].name}的工作日报"
-    return f"{team_name} 工作日报"
+        return f"{members[0].name}的智能日报"
+    return f"{team_name} 智能日报"
 
 
 def build_markdown(
@@ -139,6 +165,8 @@ def build_markdown(
     failed_sources: list[str] | None = None,
     tomorrow_plans: list[PlanItem] | None = None,
     issues: list[IssueItem] | None = None,
+    task_list: TaskRecord | None = None,
+    summary: str = "",
 ) -> str:
     """生成完整 Markdown 日报。"""
 
@@ -152,23 +180,29 @@ def build_markdown(
         lines.extend(
             [f"> ⚠️ 以下数据源获取失败：{labels}", ""]
         )
+    if summary:
+        # AI 摘要附在日报头部：失败提示之后、正文各板块之前
+        lines.extend(["## 今日总结", ""])
+        lines.extend(summary.strip().splitlines())
+        lines.append("")
 
     # 单人日报标题已含成员名，不再重复成员小节标题
     single = len(members) == 1
     for member in members:
         if not single:
             lines.extend([f"## {member.name}", ""])
-        lines.append("### 代码提交")
+        lines.append("### github代码提交情况")
         lines.extend(_render_section(member.commits, "github" in failed, "github"))
         lines.append("")
-        lines.append("### 任务进展")
-        lines.extend(_render_section(member.tasks, "lark_task" in failed, "lark_task"))
-        lines.append("")
-        lines.append("### 协作沟通")
+        lines.append("### 飞书SDD测试群协作沟通情况")
         lines.extend(
             _render_section(member.messages, "lark_message" in failed, "lark_message")
         )
         lines.append("")
+
+    lines.extend(["## 今日任务清单", ""])
+    lines.extend(_render_task_list(task_list, "lark_task" in failed))
+    lines.append("")
 
     lines.extend(["## 问题与解决", ""])
     lines.extend(_render_issues(list(issues or [])))
@@ -188,20 +222,23 @@ def generate(
     failed_sources: list[str] | None = None,
     tomorrow_plans: list[PlanItem] | None = None,
     issues: list[IssueItem] | None = None,
+    task_list: TaskRecord | None = None,
+    summary: str = "",
 ) -> DailyReport:
     """根据成员数据生成日报（design.md §4.2 生成层接口）。"""
 
     markdown = build_markdown(
         team_name, report_date, members,
         failed_sources=failed_sources, tomorrow_plans=tomorrow_plans,
-        issues=issues,
+        issues=issues, task_list=task_list, summary=summary,
     )
     html = render_report_html(
         team_name, report_date, members,
         failed_sources=failed_sources, tomorrow_plans=tomorrow_plans,
-        issues=issues,
+        issues=issues, task_list=task_list,
         report_title=report_title(members, team_name),
         show_member_names=len(members) > 1,
+        summary=summary,
     )
     return DailyReport(
         date=report_date,
@@ -213,4 +250,6 @@ def generate(
         failed_sources=list(failed_sources or []),
         tomorrow_plans=list(tomorrow_plans or []),
         issues=list(issues or []),
+        task_list=task_list,
+        summary=summary,
     )

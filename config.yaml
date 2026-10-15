@@ -1,77 +1,95 @@
-# 智能日报生成器配置文件
-# 复制为 config.yaml 后按实际情况填写；所有密钥只允许通过环境变量注入
-
 team:
-  name: "研发一组"
-
-# 团队成员身份映射：将 GitHub 与飞书两个命名空间按"人"聚合
+  name: 研发一组
 members:
-  - name: "刘政剑"
-    github: "chenpingan6158-a11y"
-    lark: "ou_10704e49a5f499b51cd710830154549c"
-
-
-# GitHub / GitHub Enterprise 数据采集
+- name: 刘政剑
+  github: chenpingan6158-a11y
+  lark: ou_10704e49a5f499b51cd710830154549c
 github:
   enabled: true
-  base_url: "https://api.github.com"
-  token_env: "GITHUB_TOKEN"        # 令牌从该环境变量读取
+  base_url: https://api.github.com
+  token_env: GITHUB_TOKEN
   repos:
-    - "chenpingan6158-a11y/usermanagersystem.github.io"
+  - chenpingan6158-a11y/usermanagersystem.github.io
   per_page: 30
-  timeout: 10                     # 单次请求超时（秒）
-
-# 飞书任务采集
+  timeout: 10
 lark_task:
   enabled: true
-  app_id_env: "LARK_APP_ID"
-  app_secret_env: "LARK_APP_SECRET"
-  project_id: "04d02bae-a55d-4437-a99f-e6e302a069cf"
+  app_id_env: LARK_APP_ID
+  app_secret_env: LARK_APP_SECRET
+  project_id: 04d02bae-a55d-4437-a99f-e6e302a069cf
   timeout: 10
-
-# 飞书群消息采集
+  auto_create_tasklist: true
 lark_message:
   enabled: true
-  app_id_env: "LARK_APP_ID"
-  app_secret_env: "LARK_APP_SECRET"
-  chat_id: "oc_bd47255067bad2492e0b374605c05239"
-  chat_name: "SDD测试"
-  # 仅保留包含以下任一关键词的消息
-  keywords: ["上线", "bug", "需求", "联调", "发布", "阻塞", "review"]
-  # 「问题与解决」板块自动提取关键词：含以下任一词的群消息进入问题板块（与协作沟通自动去重）
-  issue_keywords: ["问题", "阻塞", "报错", "失败", "bug"]
-  # 敏感词黑名单：命中即过滤，不进入日报
-  sensitive_words: ["薪资", "工资", "绩效", "裁员", "辞退"]
+  app_id_env: LARK_APP_ID
+  app_secret_env: LARK_APP_SECRET
+  chat_id: oc_bd47255067bad2492e0b374605c05239
+  chat_name: SDD测试
+  keywords:
+  - 上线
+  - bug
+  - 需求
+  - 联调
+  - 发布
+  - 阻塞
+  - review
+  - 测试
+  - 迭代
+  - 功能
+  issue_keywords:
+  - 问题
+  - 阻塞
+  - 报错
+  - 失败
+  - bug
+  sensitive_words:
+  - 薪资
+  - 工资
+  - 绩效
+  - 裁员
+  - 辞退
   timeout: 10
-
-# 邮件推送（HTML 日报）
+  plan_keywords:
+  - 计划
+  - 明天
+  - 明日
+  - 待办
+  done_keywords:
+  - 完成
+  - 做完
+  - 搞定
 email:
   enabled: true
-  smtp_host: "smtp.qq.com"
+  smtp_host: smtp.qq.com
   smtp_port: 465
   use_ssl: true
-  username_env: "SMTP_USERNAME"
-  password_env: "SMTP_PASSWORD"
-  sender: "3453927472@qq.com"
+  username_env: SMTP_USERNAME
+  password_env: SMTP_PASSWORD
+  sender: 3453927472@qq.com
   recipients:
-    - "3453927472@qq.com"
-
-# 飞书机器人推送（Markdown 日报）
+  - 3453927472@qq.com
+  
 lark_bot:
   enabled: true
-  webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/85144f89-de37-4abb-ad49-5e466a087e55"
-  chat_id: "oc_bd47255067bad2492e0b374605c05239"
+  webhook: https://open.feishu.cn/open-apis/bot/v2/hook/85144f89-de37-4abb-ad49-5e466a087e55
+  chat_id: oc_bd47255067bad2492e0b374605c05239
   timeout: 10
-
-# 日报历史存储
+ai:
+  enabled: true
+  base_url: https://open.bigmodel.cn/api/paas/v4
+  model: glm-4-flash
+  api_key_env: ZHIPU_API_KEY
+  timeout: 60
+  max_tokens: 800
 storage:
-  sqlite_path: "data/reports.db"
-
-# 工作日与调度
+  sqlite_path: data/reports.db
+dashboard:
+  member_accounts:
+    刘政剑:
+    - liuzhengjian
+    - 刘政剑
 schedule:
-  # 每日自动推送时间（HH:MM，24 小时制）；看板服务运行期间到点自动采集并推送日报
-  push_time: "10:35"
-  # 额外节假日（YYYY-MM-DD）；周末始终跳过；安装 chinesecalendar 后法定节假日自动识别
+  push_time: '10:35'
   holidays: []
-  # 调休上班日（YYYY-MM-DD）
-  workdays: ["2026-10-11"]
+  workdays:
+  - '2026-10-11'

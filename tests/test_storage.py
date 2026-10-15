@@ -74,6 +74,44 @@ def test_save_iter_delete_plan(tmp_path) -> None:
         assert [r["title"] for r in storage.iter_plans("2026-09-26")] == ["准备评审"]
 
 
+def test_plans_v2_roundtrip_status_and_msg_key(tmp_path) -> None:
+    with ReportStorage(tmp_path / "reports.db") as storage:
+        storage.save_plan(
+            "写周报", "刘政剑", "2026-09-26",
+            msg_key="ou_x|2026-09-25T10:00:00+00:00",
+        )
+        storage.save_plan("准备评审", "", "2026-09-26")  # 手动条目无 msg_key
+
+        rows = storage.iter_plans("2026-09-26")
+        assert rows[0]["status"] == "待完成"
+        assert rows[0]["msg_key"] == "ou_x|2026-09-25T10:00:00+00:00"
+        assert rows[1]["status"] == "待完成"
+        assert rows[1]["msg_key"] == ""
+
+        # msg_key 查重（群消息捕捉防重复入库）
+        assert storage.plan_msg_key_exists("ou_x|2026-09-25T10:00:00+00:00") is True
+        assert storage.plan_msg_key_exists("ou_x|不存在") is False
+
+
+def test_mark_plans_done_and_roll_pending(tmp_path) -> None:
+    with ReportStorage(tmp_path / "reports.db") as storage:
+        storage.save_plan("写周报", "刘政剑", "2026-09-25")
+        storage.save_plan("准备评审", "刘政剑", "2026-09-26")
+        storage.save_plan("已交付", "刘政剑", "2026-09-25", status="已完成")
+
+        # 打勾：按标题批量完成，幂等
+        assert storage.mark_plan_done(99999) is False
+        assert storage.mark_plans_done_by_title("写周报") == 1
+        assert storage.mark_plans_done_by_title("写周报") == 0
+
+        # 滚动：仅滚「今天之前且待完成」；已完成条目留在原日期
+        assert storage.roll_pending_plans("2026-09-27") == 1
+        assert [r["title"] for r in storage.iter_plans("2026-09-27")] == ["准备评审"]
+        kept = storage.iter_plans("2026-09-25")
+        assert [r["title"] for r in kept] == ["写周报", "已交付"]
+        assert all(r["status"] == "已完成" for r in kept)
+
+
 def test_save_iter_update_delete_issue(tmp_path) -> None:
     with ReportStorage(tmp_path / "reports.db") as storage:
         storage.save_issue("接口报错", "已定位修复", "刘政剑", "2026-09-25")

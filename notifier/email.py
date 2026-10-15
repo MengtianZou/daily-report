@@ -17,11 +17,11 @@ logger = get_logger(__name__)
 
 
 def _build_message(report: DailyReport, sender: str, recipients: list[str]) -> EmailMessage:
-    # 单人日报以成员名命名主题，多人用团队名
+    # 单人日报主题：研一+姓名+日期+智能日报（老师指定格式）；多人用团队名
     if len(report.members) == 1:
-        subject = f"{report.members[0].name}的工作日报 {report.date.isoformat()}"
+        subject = f"研一{report.members[0].name}{report.date.isoformat()}智能日报"
     else:
-        subject = f"{report.team_name} 工作日报 {report.date.isoformat()}"
+        subject = f"{report.team_name} 智能日报 {report.date.isoformat()}"
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = sender

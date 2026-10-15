@@ -18,6 +18,9 @@
 from __future__ import annotations
 
 import argparse
+import atexit
+import os
+import re
 import socket
 import time
 import webbrowser
@@ -28,13 +31,14 @@ from typing import Any
 import httpx
 
 from collector import github, lark_msg, lark_task
-from generator import formatter
+from collector._lark_client import LarkClient
+from generator import formatter, summarizer
 from notifier import email, lark_bot
 from shared.config import Config, load_config
 from shared.envfile import load_envfile
 from shared.errors import CollectorError, ConfigurationError, NotifierError
 from shared.logger import get_logger
-from shared.models import IssueItem, PlanItem
+from shared.models import IssueItem, PlanItem, TaskRecord
 from shared.storage import ReportStorage
 from webapp.export import render_dashboard
 
@@ -153,11 +157,14 @@ def _collect_all(
     config: Config,
     since: datetime,
     until: datetime,
-) -> tuple[list, list, list, list[str]]:
-    """独立采集三个数据源；单个失败记入 failed_sources，不阻断其他源。"""
+) -> tuple[list, list, list[str]]:
+    """独立采集各数据源；单个失败记入 failed_sources，不阻断其他源。
+
+    飞书任务不再做窗口变更采集——「任务进展」改由当日任务清单承载，
+    清单的滚动/创建/补缺见 _ensure_daily_tasklist。
+    """
 
     commits: list = []
-    tasks: list = []
     messages: list = []
     failed: list[str] = []
 
@@ -177,21 +184,6 @@ def _collect_all(
             failed.append("github")
             logger.error("GitHub 数据源失败", extra={"error": str(exc)})
 
-    if config["lark_task"].get("enabled"):
-        cfg = config["lark_task"]
-        try:
-            tasks = lark_task.collect(
-                cfg["project_id"],
-                since,
-                until,
-                app_id_env=cfg.get("app_id_env", "LARK_APP_ID"),
-                app_secret_env=cfg.get("app_secret_env", "LARK_APP_SECRET"),
-                timeout=cfg.get("timeout", 10),
-            )
-        except CollectorError as exc:
-            failed.append("lark_task")
-            logger.error("飞书任务数据源失败", extra={"error": str(exc)})
-
     if config["lark_message"].get("enabled"):
         cfg = config["lark_message"]
         try:
@@ -210,7 +202,7 @@ def _collect_all(
             failed.append("lark_message")
             logger.error("飞书消息数据源失败", extra={"error": str(exc)})
 
-    return commits, tasks, messages, failed
+    return commits, messages, failed
 
 
 def _push_all(config: Config, report) -> dict[str, bool]:
@@ -241,60 +233,142 @@ def _push_all(config: Config, report) -> dict[str, bool]:
     return results
 
 
+def _strip_plan_prefix(content: str, keywords: list[str]) -> str:
+    """剥离前导触发词及其后的分隔符，返回净条目内容。
+
+    仅剥前导触发词（如「明天：写周报」→「写周报」），可连续剥离多个
+    （如「明日计划：写周报」先剥「明日」再剥「计划」）；剩余不足 2 字
+    视为无效内容返回空串。
+    """
+
+    text = content.strip()
+    changed = True
+    while changed:
+        changed = False
+        for kw in keywords:
+            if kw and text.startswith(kw):
+                text = text[len(kw):].lstrip(":：,，、 ")
+                changed = True
+                break
+    text = text.strip()
+    return text if len(text) >= 2 else ""
+
+
+_NUM_HEAD = re.compile(r"^\s*\d+\s*[.、．]\s*")
+_NUM_SEP = re.compile(r"[。；;，,\s]+\d+\s*[.、．]\s*")
+
+
+def _split_numbered_items(payload: str) -> list[str]:
+    """「1.xxx。2.yyy」编号列表拆分为多条计划；非编号内容原样单条返回。
+
+    仅当正文以「1.」编号开头才拆分，且编号前须有标点或空白分隔，
+    避免「升级2.0版本」这类正文被误拆。
+    """
+
+    text = payload.strip()
+    if not _NUM_HEAD.match(text):
+        return [text] if len(text) >= 2 else []
+    items: list[str] = []
+    for i, part in enumerate(_NUM_SEP.split(text)):
+        if i == 0:
+            part = _NUM_HEAD.sub("", part, count=1)
+        part = part.strip("。；;，, 　")
+        if len(part) >= 2:
+            items.append(part)
+    return items
+
+
+def _extract_plan_payload(content: str, keywords: list[str]) -> str:
+    """提取计划正文：优先剥前导触发词；未命中前导时截取「触发词：」后正文。
+
+    中段截取（如「现在做出明日计划：1.…」）仅认触发词后紧跟冒号的
+    强信号写法，避免把含「计划」二字的普通沟通误捕为计划。
+    """
+
+    text = content.strip()
+    stripped = _strip_plan_prefix(text, keywords)
+    if stripped != text:
+        return stripped  # 剥离过前导触发词
+    cut = -1
+    for kw in keywords:
+        if not kw:
+            continue
+        idx = text.rfind(kw)
+        if idx == -1:
+            continue
+        sep = idx + len(kw)
+        if sep < len(text) and text[sep] in ":：":
+            while sep < len(text) and text[sep] in ":： 　":
+                sep += 1
+            cut = max(cut, sep)
+    if cut != -1:
+        payload = text[cut:].strip()
+        if len(payload) >= 2:
+            return payload
+    return ""
+
+
 def _collect_tomorrow_plans(config: Config, today: date) -> list[PlanItem]:
-    """组装明日计划：自动（飞书未完成任务）+ 手动（plans 表，plan_date=明天）。"""
+    """组装明日计划：纯读 plans 表（plan_date=明天 且 待完成）。
 
-    plans: list[PlanItem] = []
+    群消息捕捉与看板手动条目统一落 plans 表；同一（负责人，标题）去重。
+    """
+
     tomorrow = (today + timedelta(days=1)).isoformat()
-
-    if config["lark_task"].get("enabled"):
-        cfg = config["lark_task"]
-        name_map = {m["lark"]: m["name"] for m in config.members}
-        try:
-            open_tasks = lark_task.collect_open(
-                cfg["project_id"],
-                app_id_env=cfg.get("app_id_env", "LARK_APP_ID"),
-                app_secret_env=cfg.get("app_secret_env", "LARK_APP_SECRET"),
-                timeout=cfg.get("timeout", 10),
-            )
-        except CollectorError as exc:
-            # 明日计划为附加板块，获取失败不阻断日报生成
-            logger.error("明日计划：飞书未完成任务获取失败", extra={"error": str(exc)})
-        else:
-            for t in open_tasks:
-                if t.assignee not in name_map:
-                    continue  # 非团队成员的未完成任务不进入明日计划
-                plans.append(
-                    PlanItem(
-                        title=t.title,
-                        owner=name_map[t.assignee],
-                        source="auto",
-                    )
-                )
-
+    plans: list[PlanItem] = []
+    seen: set[tuple[str, str]] = set()
     with ReportStorage(config["storage"]["sqlite_path"]) as storage:
         for row in storage.iter_plans(tomorrow):
+            if row["status"] != "待完成":
+                continue
+            key = (row["owner"], row["title"])
+            if key in seen:
+                continue
+            seen.add(key)
             plans.append(
                 PlanItem(
                     title=row["title"],
                     owner=row["owner"],
-                    source="manual",
+                    source="auto" if row["msg_key"] else "manual",
                     plan_id=int(row["id"]),
                 )
             )
     return plans
 
 
+# 解决类消息特征：命中视为「问题已解决/原因说明」的总结，不再当新问题采集
+_RESOLVED_HINTS = ("已解决", "解决了", "得到解决", "已修复", "修复了", "已排查", "原因是", "原因：")
+
+
+def classify_message(content: str, issue_keywords: list[str]) -> str:
+    """群消息归类：issue=问题描述（进问题与解决）；resolved=解决总结；normal=普通沟通。
+
+    解决特征词优先判定：总结消息可能不含问题关键词（如「已修复，原因是配置
+    写错」），只按问题关键词过滤会漏采。
+    """
+
+    if any(h in content for h in _RESOLVED_HINTS):
+        return "resolved"
+    if not any(kw in content for kw in issue_keywords):
+        return "normal"
+    return "issue"
+
+
 def _collect_issues(
     config: Config,
     since: datetime,
     until: datetime,
-    messages: list,
     today: date,
-) -> list[IssueItem]:
-    """组装问题与解决：自动（群消息按问题关键词提取）+ 手动（issues 表）。"""
+) -> tuple[list[IssueItem], set[tuple[str, str]]]:
+    """组装问题与解决：自动（群消息按问题关键词提取）+ 手动（issues 表）。
+
+    返回 (条目列表, 问题消息键集合)。判定为「问题描述」的消息即使同时命中
+    协作沟通关键词，也由 run_pipeline 从沟通板块剔除，保证同一句话只出现在
+    问题与解决；「已解决/原因是」类总结消息自动挂为同负责人最近问题的方案。
+    """
 
     issues: list[IssueItem] = []
+    issue_keys: set[tuple[str, str]] = set()
     issue_keywords = [
         kw for kw in config.get_path("lark_message.issue_keywords", []) if kw
     ]
@@ -308,12 +382,14 @@ def _collect_issues(
             cfg = config["lark_message"]
             name_map = {m["lark"]: m["name"] for m in config.members}
             sensitive = set(cfg.get("sensitive_words", []))
-            # 与「协作沟通」板块已采用的消息去重（同一条消息不在两处重复出现）
-            seen = {(m.sender, m.timestamp.isoformat()) for m in messages}
+            # 解决总结可能不含问题关键词，采集词需并入解决特征词才能拉到
+            fetch_keywords = list(issue_keywords) + [
+                h for h in _RESOLVED_HINTS if h not in issue_keywords
+            ]
             try:
                 candidates = lark_msg.collect(
                     cfg["chat_id"],
-                    issue_keywords,
+                    fetch_keywords,
                     since,
                     until,
                     app_id_env=cfg.get("app_id_env", "LARK_APP_ID"),
@@ -327,21 +403,33 @@ def _collect_issues(
                 logger.error("问题与解决：飞书消息获取失败", extra={"error": str(exc)})
             else:
                 for m in candidates:
-                    # 采集层按关键词过滤后再做一次防御性过滤，避免误采
-                    if not any(kw in m.content for kw in issue_keywords):
-                        continue
-                    if (m.sender, m.timestamp.isoformat()) in seen:
+                    kind = classify_message(m.content, issue_keywords)
+                    if kind == "normal":
                         continue
                     if any(word in m.content for word in sensitive):
                         continue
                     key = f"{m.sender}|{m.timestamp.isoformat()}"
-                    if key in claimed:
+                    if kind == "resolved":
+                        # 解决总结：挂到同负责人最近一个还没有方案的自动条目
+                        owner = name_map.get(m.sender, "")
+                        for item in reversed(issues):
+                            if (
+                                item.source == "auto"
+                                and item.owner == owner
+                                and not item.solution
+                            ):
+                                item.solution = m.content
+                                item.status = "已解决"
+                                break
                         continue
+                    if key in claimed or (m.sender, m.timestamp.isoformat()) in issue_keys:
+                        continue
+                    issue_keys.add((m.sender, m.timestamp.isoformat()))
                     issues.append(
                         IssueItem(
                             problem=m.content,
                             owner=name_map.get(m.sender, ""),
-                            status="已解决" if "已解决" in m.content else "处理中",
+                            status="处理中",
                             source="auto",
                             msg_key=key,
                         )
@@ -359,7 +447,289 @@ def _collect_issues(
                     msg_key=row["msg_key"],
                 )
             )
-    return issues
+    return issues, issue_keys
+
+
+# ---------------------------------------------------------------------------
+# 群消息任务闭环：明日计划捕捉 / 当日清单保障 / 完成宣告
+# ---------------------------------------------------------------------------
+
+def _lark_task_client(config: Config) -> LarkClient:
+    """按 lark_task 配置构建飞书客户端（token 惰性获取）。"""
+
+    cfg = config["lark_task"]
+    return LarkClient(
+        os.environ.get(cfg.get("app_id_env", "LARK_APP_ID"), ""),
+        os.environ.get(cfg.get("app_secret_env", "LARK_APP_SECRET"), ""),
+        timeout=cfg.get("timeout", 10),
+    )
+
+
+def _collect_plan_messages(
+    config: Config,
+    since: datetime,
+    until: datetime,
+    today: date,
+) -> set[tuple[str, str]]:
+    """捕捉群消息中的明日计划（命中 plan_keywords），落 plans 表。
+
+    done 优先于 plan：以完成关键词开头的消息（如「完成汇报PPT」）交由
+    _collect_done_messages 处理；仅含「完成」二字的计划消息（如
+    「明天：完成作业」）仍按计划捕捉。触发词支持前导或「触发词：」
+    中段写法，编号列表（1.…。2.…）拆分为多条。
+    返回已捕捉消息键集合，供 run_pipeline 从协作沟通板块剔除；早前轮次
+    已入库的消息每轮也加入剔除集合，保证不回流到沟通板块。
+    """
+
+    plan_keys: set[tuple[str, str]] = set()
+    cfg = config["lark_message"]
+    if not cfg.get("enabled"):
+        return plan_keys
+    plan_keywords = [kw for kw in cfg.get("plan_keywords", []) if kw]
+    done_keywords = [kw for kw in cfg.get("done_keywords", []) if kw]
+    if not plan_keywords:
+        return plan_keys
+
+    name_map = {m["lark"]: m["name"] for m in config.members}
+    sensitive = set(cfg.get("sensitive_words", []))
+    tomorrow = (today + timedelta(days=1)).isoformat()
+
+    with ReportStorage(config["storage"]["sqlite_path"]) as storage:
+        try:
+            candidates = lark_msg.collect(
+                cfg["chat_id"],
+                plan_keywords,
+                since,
+                until,
+                app_id_env=cfg.get("app_id_env", "LARK_APP_ID"),
+                app_secret_env=cfg.get("app_secret_env", "LARK_APP_SECRET"),
+                sensitive_words=cfg.get("sensitive_words", []),
+                chat_name=cfg.get("chat_name", cfg["chat_id"]),
+                timeout=cfg.get("timeout", 10),
+            )
+        except CollectorError as exc:
+            # 明日计划为附加板块，捕捉失败不阻断日报生成
+            logger.error("明日计划：飞书消息获取失败", extra={"error": str(exc)})
+            return plan_keys
+
+        for m in candidates:
+            if any(
+                m.content.strip().startswith(dk) for dk in done_keywords
+            ):
+                continue  # 完成宣告（触发词开头）优先，不进计划
+            if any(word in m.content for word in sensitive):
+                continue
+            key = f"{m.sender}|{m.timestamp.isoformat()}"
+            sender_key = (m.sender, m.timestamp.isoformat())
+            if storage.plan_msg_key_exists(key):
+                plan_keys.add(sender_key)  # 已入库，仅保证不回流沟通
+                continue
+            payload = _extract_plan_payload(m.content, plan_keywords)
+            items = _split_numbered_items(payload)
+            if not items:
+                continue
+            for title in items:
+                storage.save_plan(
+                    title=title,
+                    owner=name_map.get(m.sender, ""),
+                    plan_date=tomorrow,
+                    msg_key=key,
+                )
+            plan_keys.add(sender_key)
+    return plan_keys
+
+
+def _ensure_daily_tasklist(
+    config: Config,
+    today: date,
+    failed: list[str],
+) -> TaskRecord | None:
+    """保障当日「M月D日任务清单」存在且子任务齐全，返回清单快照树。
+
+    流程：读当天待完成计划标题 → 按名查清单 → 不存在则创建（父任务+
+    全部子任务）→ 存在则按标题比对补缺。标题集为空时不创建（仍返回
+    已存在清单）。任一步骤失败仅记日志并标记 lark_task 失败，不阻断日报。
+    """
+
+    cfg = config["lark_task"]
+    if not cfg.get("enabled"):
+        return None
+
+    titles: list[str] = []
+    seen: set[str] = set()
+    with ReportStorage(config["storage"]["sqlite_path"]) as storage:
+        for row in storage.iter_plans(today.isoformat()):
+            if row["status"] != "待完成" or row["title"] in seen:
+                continue
+            seen.add(row["title"])
+            titles.append(row["title"])
+
+    try:
+        client = _lark_task_client(config)
+        existing = lark_task.fetch_daily_tasklist(client, cfg["project_id"], today)
+        if not cfg.get("auto_create_tasklist", True) or not titles:
+            return existing
+        if existing is None:
+            lark_task.create_daily_tasklist(client, cfg["project_id"], today, titles)
+        else:
+            have = {s.title for s in existing.subtasks}
+            missing = [t for t in titles if t not in have]
+            if missing and existing.guid:
+                lark_task.add_subtasks(client, existing.guid, missing)
+        return lark_task.fetch_daily_tasklist(client, cfg["project_id"], today)
+    except CollectorError as exc:
+        failed.append("lark_task")
+        logger.error("今日任务清单保障失败", extra={"error": str(exc)})
+        return None
+
+
+# 完成宣告的尾部变体：剥掉后拿核心文本做匹配（兼容「xxx 已完成」写法）
+_DONE_SUFFIXES = ("已完成", "完成了", "已搞定", "搞定了", "做完了", "完成", "做完", "搞定")
+
+
+def _strip_done_suffix(text: str) -> str:
+    """剥尾部完成宣告词（如「高级软件工程PPT已完成」→「高级软件工程PPT」）。
+
+    可连续剥除多个变体；剥后不足 2 字视为无效返回原文（由调用方判长度）。
+    """
+
+    text = text.strip()
+    changed = True
+    while changed:
+        changed = False
+        for suf in _DONE_SUFFIXES:
+            if text.endswith(suf) and len(text) > len(suf):
+                text = text[: -len(suf)].strip("，。,.、!！?？ ")
+                changed = True
+                break
+    return text
+
+
+def _char_overlap(left: str, right: str) -> float:
+    """字符集 Jaccard 重合度（0~1）：语序重排消息的模糊匹配兜底。"""
+
+    a, b = set(left), set(right)
+    union = len(a | b)
+    return len(a & b) / union if union else 0.0
+
+
+def _collect_done_messages(
+    config: Config,
+    since: datetime,
+    until: datetime,
+    task_list: TaskRecord | None,
+) -> set[tuple[str, str]]:
+    """捕捉完成宣告（命中 done_keywords）并同步完成状态。
+
+    匹配规则（防误伤梯度）：消息与子任务标题先做双侧归一化（剥前导完成
+    触发词 + 剥尾部完成宣告词，兼容「完成 xxx」与「xxx 已完成」两种写法），
+    再按 归一化精确 → 双向包含 → 唯一模糊兜底（字符重合度，仅唯一超阈值
+    才命中）匹配；一条消息命中多个子任务全部放弃。命中后先飞书打勾（失败
+    下轮重试），再落库标完成；对已完成子任务的完成宣告只做落库对账并从
+    沟通剔除（防往轮消息重复处理）。
+    返回已消费消息键集合。
+    """
+
+    def _norm(title: str) -> str:
+        # 双侧归一化：剥前导完成触发词与尾部完成宣告词后比对
+        return _strip_done_suffix(_strip_plan_prefix(title, done_keywords))
+
+    def _match(pool) -> list[str]:
+        """在候选标题集合中匹配核心文本，可能返回多个命中。"""
+
+        core = _strip_done_suffix(target)
+        if not core or len(core) < 2:
+            return []
+        hits = [t for t in pool if _norm(t) == core]
+        if not hits:
+            hits = [t for t in pool if core in t or t in core]
+        if not hits:
+            # 语序重排兜底（如「高级软件工程PPT补充」vs「继续补充高级
+            # 软件工程PPT」）：仅当唯一候选字符重合度超阈值才命中
+            over = [
+                t for t in pool
+                if _char_overlap(core, _norm(t)) >= 0.7
+            ]
+            if len(over) == 1:
+                hits = over
+        return hits
+
+    done_keys: set[tuple[str, str]] = set()
+    cfg = config["lark_message"]
+    if task_list is None or not cfg.get("enabled"):
+        return done_keys
+    done_keywords = [kw for kw in cfg.get("done_keywords", []) if kw]
+    plan_keywords = [kw for kw in cfg.get("plan_keywords", []) if kw]
+    if not done_keywords:
+        return done_keys
+
+    sensitive = set(cfg.get("sensitive_words", []))
+    pending = {
+        s.title: s.guid
+        for s in task_list.subtasks
+        if s.status_to != "已完成" and s.guid
+    }
+    completed = {s.title for s in task_list.subtasks if s.status_to == "已完成"}
+
+    try:
+        candidates = lark_msg.collect(
+            cfg["chat_id"],
+            done_keywords,
+            since,
+            until,
+            app_id_env=cfg.get("app_id_env", "LARK_APP_ID"),
+            app_secret_env=cfg.get("app_secret_env", "LARK_APP_SECRET"),
+            sensitive_words=cfg.get("sensitive_words", []),
+            chat_name=cfg.get("chat_name", cfg["chat_id"]),
+            timeout=cfg.get("timeout", 10),
+        )
+    except CollectorError as exc:
+        logger.error("完成宣告：飞书消息获取失败", extra={"error": str(exc)})
+        return done_keys
+
+    client = _lark_task_client(config)
+    with ReportStorage(config["storage"]["sqlite_path"]) as storage:
+        for m in candidates:
+            if any(word in m.content for word in sensitive):
+                continue
+            if any(
+                m.content.strip().startswith(pk) for pk in plan_keywords
+            ):
+                continue  # 计划宣告（如「明天：完成作业」）优先，不误判完成
+            target = _strip_plan_prefix(m.content, done_keywords)
+            if not target:
+                continue
+            key = (m.sender, m.timestamp.isoformat())
+
+            titles = _match(pending)
+            if len(titles) > 1:
+                # 一条消息命中多个子任务：全部放弃，避免误伤
+                logger.warning(
+                    "完成宣告命中多个子任务，放弃处理",
+                    extra={"target": target, "hits": titles},
+                )
+                continue
+
+            if not titles:
+                # 无未完成命中：若为已完成条目的宣告（含往轮重放），仅对账落库
+                done_hits = _match(completed)
+                if done_hits:
+                    storage.mark_plans_done_by_title(done_hits[0])
+                    done_keys.add(key)
+                continue
+
+            title = titles[0]
+            try:
+                lark_task.complete_task(client, pending[title])
+            except CollectorError as exc:
+                # 飞书打勾失败：不落库不剔除，下一轮重试
+                logger.error(
+                    "飞书完成任务失败", extra={"title": title, "error": str(exc)}
+                )
+                continue
+            storage.mark_plans_done_by_title(title)
+            done_keys.add(key)
+    return done_keys
 
 
 def run_pipeline(
@@ -388,7 +758,17 @@ def run_pipeline(
         extra={"date": today.isoformat(), "sources": config.enabled_sources()},
     )
 
-    commits, tasks, messages, failed = _collect_all(config, since, until)
+    commits, messages, failed = _collect_all(config, since, until)
+
+    # 任务闭环：滚动 → 计划捕捉 → 清单保障 → 完成宣告
+    with ReportStorage(config["storage"]["sqlite_path"]) as storage:
+        rolled = storage.roll_pending_plans(today.isoformat())
+    if rolled:
+        logger.info("未完成计划滚动至今日", extra={"count": rolled})
+
+    plan_keys = _collect_plan_messages(config, since, until, today)
+    task_list = _ensure_daily_tasklist(config, today, failed)
+    done_keys = _collect_done_messages(config, since, until, task_list)
 
     attempted = config.enabled_sources()
     if attempted and len(failed) == len(attempted):
@@ -399,12 +779,27 @@ def run_pipeline(
         )
         return False
 
-    members = formatter.aggregate(config.members, commits, tasks, messages)
+    issues, issue_keys = _collect_issues(config, since, until, today)
+    consumed = issue_keys | plan_keys | done_keys
+    if consumed:
+        # 已归入问题/计划/完成宣告的消息不再重复出现在协作沟通板块
+        messages = [
+            m for m in messages
+            if (m.sender, m.timestamp.isoformat()) not in consumed
+        ]
+    members = formatter.aggregate(config.members, commits, [], messages)
     tomorrow_plans = _collect_tomorrow_plans(config, today)
-    issues = _collect_issues(config, since, until, messages, today)
+
+    # AI 摘要（可选环节）：未启用/未配 Key/接口失败均返回空串，不阻断日报
+    summary = summarizer.generate_summary(
+        today, members, task_list, tomorrow_plans, issues,
+        config.get_path("ai", {}) or {}, failed_sources=failed,
+    )
+
     report = formatter.generate(
         members, today, config.team_name, failed_sources=failed,
-        tomorrow_plans=tomorrow_plans, issues=issues,
+        tomorrow_plans=tomorrow_plans, issues=issues, task_list=task_list,
+        summary=summary,
     )
 
     with ReportStorage(config["storage"]["sqlite_path"]) as storage:
@@ -424,7 +819,6 @@ def run_pipeline(
         "日报流程结束",
         extra={
             "commits": len(commits),
-            "tasks": len(tasks),
             "messages": len(messages),
             "failed_sources": failed,
             "push_results": push_results,
@@ -476,6 +870,88 @@ def view_report(
     opener(out_path.resolve().as_uri())
     logger.info("已在浏览器打开日报看板", extra={"path": str(out_path)})
     return True
+
+
+# ---------------------------------------------------------------------------
+# 单实例保护
+# ---------------------------------------------------------------------------
+
+try:  # Windows 独占文件锁；非 Windows 平台降级为不防护
+    import msvcrt
+except ImportError:  # pragma: no cover - 部署环境为 Windows
+    msvcrt = None  # type: ignore[assignment]
+
+_LOCK_HANDLE: Any = None
+_LOCK_OFFSET = 1024  # 锁定远离 PID 内容的字节，避免锁区导致冲突方读取被拒
+
+
+def _service_lock_path(config: Config) -> Path:
+    """服务锁文件路径：与数据库同目录（data/service.lock）。"""
+
+    return Path(config["storage"]["sqlite_path"]).parent / "service.lock"
+
+
+def _acquire_service_lock(config: Config) -> bool:
+    """尝试获取独占服务锁；已有实例在跑时返回 False。
+
+    通过 msvcrt 对锁文件偏移 _LOCK_OFFSET 处的字节加独占锁：进程退出时
+    操作系统自动释放，无需清理残留锁文件；锁持有者的 PID 写在文件头
+    （锁区之外，冲突方可正常读取）便于排查。
+    """
+
+    global _LOCK_HANDLE
+    if msvcrt is None:
+        return True
+
+    lock_path = _service_lock_path(config)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # O_RDWR|O_CREAT 不截断：避免冲突方 open("w") 清空持有者写入的 PID
+        handle = os.fdopen(os.open(lock_path, os.O_RDWR | os.O_CREAT), "r+b")
+    except OSError as exc:
+        logger.warning(
+            "服务锁文件不可用，跳过单实例保护", extra={"error": str(exc)}
+        )
+        return True
+
+    try:
+        handle.seek(_LOCK_OFFSET)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        handle.close()
+        return False
+
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()).encode())
+    handle.flush()
+    _LOCK_HANDLE = handle
+    atexit.register(_release_service_lock)
+    return True
+
+
+def _release_service_lock() -> None:
+    """释放服务锁（进程退出时 atexit 自动调用，一般无需显式调用）。"""
+
+    global _LOCK_HANDLE
+    if _LOCK_HANDLE is None:
+        return
+    handle, _LOCK_HANDLE = _LOCK_HANDLE, None
+    try:
+        handle.seek(_LOCK_OFFSET)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+    handle.close()
+
+
+def _read_lock_pid(config: Config) -> str:
+    """读取锁文件中记录的持有者 PID（读取失败返回空串）。"""
+
+    try:
+        return _service_lock_path(config).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -538,6 +1014,18 @@ def main(argv: list[str] | None = None) -> int:
 
     # 默认动作（含显式 --serve）：启动本地只读看板服务
     from webapp.server import serve
+
+    if not _acquire_service_lock(config):
+        pid = _read_lock_pid(config)
+        logger.error(
+            "已有看板服务实例在运行，拒绝重复启动",
+            extra={"running_pid": pid or "未知"},
+        )
+        print(
+            f"检测到看板服务已在运行（PID {pid or '未知'}），请勿重复启动；"
+            "如需重启请先关闭现有实例。"
+        )
+        return 1
 
     try:
         serve(config)

@@ -1,8 +1,9 @@
-"""飞书任务采集模块（design.md §2、§4.1）。
+"""飞书任务采集与任务清单写入模块（design.md §2、§4.1）。
 
-通过 Task v2 接口列出项目内的任务，识别采集窗口内发生的状态变更：
-- created_at 落在窗口内：(无) → 新建
-- completed_at 落在窗口内：进行中 → 已完成
+职责分两块：
+- 采集：按名称「M月D日任务清单」查找当日任务清单，返回含子任务完成进度的快照树；
+- 写入：为明日计划自动创建当日任务清单（父任务+子任务），并支持按 guid 完成任务。
+
 子任务不在清单列表中返回，须逐任务调用 subtasks 子接口获取；
 飞书 token 失效时由 LarkClient 自动刷新并重试。
 """
@@ -10,19 +11,22 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+import time
+from datetime import date, datetime, timezone
 from typing import Any
 
 from collector._lark_client import LARK_BASE_URL, LarkClient
 from shared.models import TaskRecord
 
 _TASKLIST_TASKS_PATH = "/open-apis/task/v2/tasklists/{guid}/tasks"
+_TASKS_PATH = "/open-apis/task/v2/tasks"
+_SUBTASKS_PATH = "/open-apis/task/v2/tasks/{guid}/subtasks"
 
 
-def _to_milliseconds(value: datetime) -> int:
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return int(value.timestamp() * 1000)
+def _tasklist_name(day: date) -> str:
+    """当日任务清单的固定命名：M月D日任务清单。"""
+
+    return f"{day.month}月{day.day}日任务清单"
 
 
 def _from_milliseconds(value: Any) -> datetime:
@@ -35,26 +39,6 @@ def _pick_assignee(task: dict) -> str:
         if member.get("role") == "assignee":
             return member.get("id", "")
     return members[0].get("id", "") if members else ""
-
-
-def _detect_change(
-    task: dict,
-    since_ms: int,
-    until_ms: int,
-) -> tuple[str, str, int] | None:
-    """返回 (status_from, status_to, event_time_ms)，无变更返回 None。
-
-    同一窗口内先创建又完成时，以完成事件为准（对日报更有意义）。
-    """
-
-    created_at = int(task.get("created_at") or 0)
-    completed_at = int(task.get("completed_at") or 0)
-
-    if since_ms <= completed_at <= until_ms:
-        return "进行中", "已完成", completed_at
-    if since_ms <= created_at <= until_ms:
-        return "(无)", "新建", created_at
-    return None
 
 
 def _current_status(task: dict) -> str:
@@ -72,7 +56,7 @@ def _reference_time(task: dict) -> int:
 
 
 def _snapshot_record(task: dict) -> TaskRecord:
-    """为子任务构建“当前状态”快照（非今日变更，故 status_from 为空）。"""
+    """构建任务当前状态快照（status_from 为空表示非今日变更）。"""
     return TaskRecord(
         assignee=_pick_assignee(task),
         title=task.get("summary", ""),
@@ -80,6 +64,7 @@ def _snapshot_record(task: dict) -> TaskRecord:
         status_to=_current_status(task),
         updated_at=_from_milliseconds(_reference_time(task)),
         parent_guid=task.get("parent_guid") or "",
+        guid=task.get("_guid", ""),
     )
 
 
@@ -89,7 +74,7 @@ def _fetch_task_tree(client: LarkClient, project_id: str) -> list[dict]:
     def fetch_task(guid: str) -> dict:
         detail = client.request(
             "GET",
-            f"/open-apis/task/v2/tasks/{guid}",
+            f"{_TASKS_PATH}/{guid}",
             params={"user_id_type": "open_id"},
         )
         task = detail.get("task", {})
@@ -100,7 +85,7 @@ def _fetch_task_tree(client: LarkClient, project_id: str) -> list[dict]:
         """子任务不在清单列表中返回，必须调用 subtasks 子接口。"""
         children: list[dict] = []
         for slim in client.paginate(
-            f"/open-apis/task/v2/tasks/{guid}/subtasks",
+            _SUBTASKS_PATH.format(guid=guid),
             {"page_size": 50, "user_id_type": "open_id"},
         ):
             child = fetch_task(slim["guid"])
@@ -119,102 +104,91 @@ def _fetch_task_tree(client: LarkClient, project_id: str) -> list[dict]:
     return top_tasks
 
 
-def collect(
+def _attach_snapshots(parent: TaskRecord, task: dict) -> None:
+    """递归把全部子孙任务的状态快照挂到父记录下。"""
+
+    for child in task.get("_children", []):
+        sub = _snapshot_record(child)
+        parent.subtasks.append(sub)
+        _attach_snapshots(sub, child)
+
+
+def fetch_daily_tasklist(
+    client: LarkClient,
     project_id: str,
-    since: datetime,
-    until: datetime,
-    *,
-    app_id_env: str = "LARK_APP_ID",
-    app_secret_env: str = "LARK_APP_SECRET",
-    base_url: str = LARK_BASE_URL,
-    timeout: float = 10.0,
-    lark_client: LarkClient | None = None,
-) -> list[TaskRecord]:
-    """获取指定项目中在 [since, until] 内发生状态变更的任务记录（含子任务）。"""
+    day: date,
+) -> TaskRecord | None:
+    """按名称「M月D日任务清单」查找当日任务清单。
 
-    client = lark_client or LarkClient(
-        os.environ.get(app_id_env, ""),
-        os.environ.get(app_secret_env, ""),
-        base_url=base_url,
-        timeout=timeout,
-    )
-
-    since_ms = _to_milliseconds(since)
-    until_ms = _to_milliseconds(until)
-
-    top_tasks = _fetch_task_tree(client, project_id)
-
-    def has_window_change(task: dict) -> bool:
-        """任务自身或其任一子孙在采集窗口内发生状态变更。"""
-        if _detect_change(task, since_ms, until_ms) is not None:
-            return True
-        return any(has_window_change(child) for child in task.get("_children", []))
-
-    def build_record(task: dict, *, is_child: bool) -> TaskRecord:
-        change = _detect_change(task, since_ms, until_ms)
-        if change is not None:
-            status_from, status_to, event_time_ms = change
-            return TaskRecord(
-                assignee=_pick_assignee(task),
-                title=task.get("summary", ""),
-                status_from=status_from,
-                status_to=status_to,
-                updated_at=_from_milliseconds(event_time_ms),
-                parent_guid=task.get("parent_guid") or "",
-            )
-        record = _snapshot_record(task)  # 窗口内无变更，仅展示当前状态
-        if not is_child:
-            record.parent_guid = ""  # 顶层快照不标父级
-        return record
-
-    def attach_subtasks(parent: TaskRecord, task: dict) -> None:
-        """将某任务的全部子孙作为记录挂到父任务下（有变更记变更，无变更记快照）。"""
-        for child in task.get("_children", []):
-            sub = build_record(child, is_child=True)
-            parent.subtasks.append(sub)
-            attach_subtasks(sub, child)
-
-    records: list[TaskRecord] = []
-    for task in top_tasks:
-        # 只有任务自身或子孙有今日变更时才进入日报
-        if not has_window_change(task):
-            continue
-        record = build_record(task, is_child=False)
-        attach_subtasks(record, task)
-        records.append(record)
-
-    return records
-
-
-def collect_open(
-    project_id: str,
-    *,
-    app_id_env: str = "LARK_APP_ID",
-    app_secret_env: str = "LARK_APP_SECRET",
-    base_url: str = LARK_BASE_URL,
-    timeout: float = 10.0,
-    lark_client: LarkClient | None = None,
-) -> list[TaskRecord]:
-    """获取清单中全部未完成（进行中）的顶层任务，供「明日计划」使用。
-
-    与 collect 不同：不看采集窗口，只看当前状态快照；子任务一并挂载。
+    返回带子任务进度快照的记录；不存在返回 None。
     """
 
-    client = lark_client or LarkClient(
-        os.environ.get(app_id_env, ""),
-        os.environ.get(app_secret_env, ""),
-        base_url=base_url,
-        timeout=timeout,
-    )
-
-    top_tasks = _fetch_task_tree(client, project_id)
-
-    records: list[TaskRecord] = []
-    for task in top_tasks:
-        if int(task.get("completed_at") or 0) > 0:
-            continue  # 已完成，不进明日计划
+    name = _tasklist_name(day)
+    for task in _fetch_task_tree(client, project_id):
+        if task.get("summary") != name:
+            continue
         record = _snapshot_record(task)
-        for child in task.get("_children", []):
-            record.subtasks.append(_snapshot_record(child))
-        records.append(record)
-    return records
+        record.parent_guid = ""  # 顶层清单不标父级
+        _attach_snapshots(record, task)
+        return record
+    return None
+
+
+def add_subtasks(client: LarkClient, parent_guid: str, titles: list[str]) -> list[str]:
+    """为父任务逐条创建子任务，返回新建子任务 guid 列表。"""
+
+    guids: list[str] = []
+    for title in titles:
+        data = client.request(
+            "POST",
+            _SUBTASKS_PATH.format(guid=parent_guid),
+            params={"user_id_type": "open_id"},
+            json_body={"summary": title},
+        )
+        guids.append(data.get("task", {}).get("guid", ""))
+    return guids
+
+
+def create_daily_tasklist(
+    client: LarkClient,
+    project_id: str,
+    day: date,
+    titles: list[str],
+) -> str:
+    """创建「M月D日任务清单」父任务并逐条挂载子任务，返回父任务 guid。
+
+    父任务通过 tasklists 字段直接挂入目标清单；子任务经 subtasks 接口创建。
+    """
+
+    data = client.request(
+        "POST",
+        _TASKS_PATH,
+        params={"user_id_type": "open_id"},
+        json_body={
+            "summary": _tasklist_name(day),
+            "tasklists": [{"tasklist_guid": project_id}],
+        },
+    )
+    parent_guid = data.get("task", {}).get("guid", "")
+    if not parent_guid:
+        return ""
+    add_subtasks(client, parent_guid, titles)
+    return parent_guid
+
+
+def complete_task(client: LarkClient, guid: str) -> bool:
+    """完成任务：PATCH completed_at 为当前毫秒时间戳（Task v2 更新约定）。
+
+    成功返回 True；失败抛 CollectorError，由调用方决定是否重试。
+    """
+
+    data = client.request(
+        "PATCH",
+        f"{_TASKS_PATH}/{guid}",
+        params={"user_id_type": "open_id"},
+        json_body={
+            "task": {"completed_at": int(time.time() * 1000)},
+            "update_fields": ["completed_at"],
+        },
+    )
+    return bool(int(data.get("task", {}).get("completed_at") or 0))

@@ -160,7 +160,7 @@ svg{display:block}
 .member-name{margin:0;font-size:16px;font-weight:600}
 .member-meta{margin:2px 0 0;font-size:13px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 12px}
 
-.modules{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}
+.modules{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
 .module{padding:16px 20px;border-right:1px solid var(--border);min-width:0}
 .module:last-child{border-right:0}
 .module-head{display:flex;align-items:center;gap:8px;margin:0 0 10px}
@@ -175,25 +175,22 @@ svg{display:block}
 .record-title{font-size:14px;line-height:1.5;overflow-wrap:anywhere}
 .record-meta{display:flex;align-items:center;gap:12px;font-size:12px;color:var(--muted);flex-wrap:wrap;font-variant-numeric:tabular-nums}
 
-/* 子任务：下拉式折叠面板 */
-.task-toggle{display:inline-flex;align-items:center;gap:6px;margin-top:6px;width:fit-content;padding:2px 10px;font-size:12px;font-weight:600;color:var(--accent);background:var(--accent-weak);border:none;border-radius:6px;cursor:pointer}
-.task-toggle:hover{filter:brightness(.96)}
-.toggle-arrow{display:inline-block;font-size:10px;transition:transform .18s ease}
-.task-record.subtasks-open .toggle-arrow{transform:rotate(90deg)}
-.subtasks{margin-top:6px;padding-left:12px;border-left:2px solid var(--border)}
-.subtask-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
-.subtask-item{display:flex;align-items:center;gap:8px;font-size:13px;flex-wrap:wrap}
-.subtask-icon{flex:none}
-.subtask-status{font-size:11px;color:var(--muted);white-space:nowrap}
-.subtask-title{flex:1;min-width:0;overflow-wrap:anywhere}
-.subtask-time{font-size:11px;color:var(--muted);flex:none}
 .diff-add{color:var(--success)}
 .diff-del{color:var(--danger)}
-.status{display:inline-flex;align-items:center;gap:6px;font-size:12px;flex-wrap:wrap}
-.status-from,.status-to{border-radius:6px;padding:1px 8px;border:1px solid var(--border);background:var(--surface-2);white-space:nowrap}
-.status-to{background:var(--accent-weak);border-color:transparent;color:var(--accent);font-weight:600}
-.arrow{color:var(--muted)}
-.chat{font-size:12px;color:var(--accent);background:var(--accent-weak);border-radius:6px;padding:1px 7px;white-space:nowrap}
+.commit-link{color:inherit;text-decoration:none}
+.commit-link:hover .commit-ext,.commit-link:hover{color:var(--accent);text-decoration:underline}
+.commit-ext{font-size:12px;font-weight:400;color:var(--accent)}
+.commit-files{margin-top:8px;display:flex;flex-direction:column;gap:8px}
+.commit-file{font-size:12px;font-weight:600}
+.commit-fname{color:var(--accent);text-decoration:none;overflow-wrap:anywhere}
+.commit-fname:hover{text-decoration:underline}
+.commit-diff{margin-top:4px;padding:6px 10px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;font-family:Consolas,Menlo,monospace;font-size:12px;line-height:1.7;font-weight:400;overflow-x:auto}
+.commit-line{white-space:pre-wrap;word-break:break-all}
+.commit-plus{color:var(--success)}
+.commit-filelist{margin-top:6px;font-size:12px;color:var(--muted)}
+.commit-filelist a{color:var(--accent);text-decoration:none}
+.commit-filelist a:hover{text-decoration:underline}
+.diff-add{color:var(--success)}.chat{font-size:12px;color:var(--accent);background:var(--accent-weak);border-radius:6px;padding:1px 7px;white-space:nowrap}
 .empty{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:14px}
 .empty svg,.failed svg{flex:none}
 .failed{display:flex;align-items:center;gap:8px;color:var(--danger);font-size:14px}
@@ -219,6 +216,9 @@ svg{display:block}
 .plan-add{border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);border-radius:var(--radius-ctl);padding:8px 16px;font:inherit;font-size:14px;font-weight:600;cursor:pointer}
 .plan-add:hover{filter:brightness(1.06)}
 .plan-empty{padding:14px 20px 4px;color:var(--muted);font-size:14px;display:flex;align-items:center;gap:8px}
+
+/* 今日总结卡片（AI 摘要，复用 plan-* 基础样式） */
+.summary-text{margin:0;padding:14px 20px 16px;font-size:14px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
 
 /* 问题与解决卡片（复用 plan-* 基础样式） */
 .issue-status{flex:none;font-size:12px;border-radius:6px;padding:1px 8px;white-space:nowrap;margin-top:1px;border:1px solid transparent}
@@ -287,6 +287,9 @@ svg{display:block}
         <h1 id="pageTitle">研发一组 · 工作日报</h1>
         <p class="topbar-sub" id="pageSub"></p>
       </div>
+      <button class="icon-btn" id="logoutBtn" type="button" aria-label="退出登录" title="退出登录">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>
+      </button>
       <button class="icon-btn" id="themeBtn" type="button" aria-label="切换到深色模式">
         <span id="themeIcon"></span>
       </button>
@@ -297,6 +300,8 @@ svg{display:block}
       <div class="notice" id="notice" role="status" hidden></div>
       <div class="filters" id="filters" aria-label="按成员筛选"></div>
       <div class="members" id="members"></div>
+      <section id="summaryCard" aria-label="今日总结"></section>
+      <section id="taskCard" aria-label="今日任务清单"></section>
       <section id="planCard" aria-label="明日计划"></section>
       <section id="issueCard" aria-label="问题与解决"></section>
       <footer class="page-foot" id="pageFoot"></footer>
@@ -340,24 +345,26 @@ svg{display:block}
   var AUTO_REFRESH_INTERVAL = __AUTO_REFRESH_INTERVAL__;
 
   var SOURCES = {
-    github: { key: "github", title: "代码提交", icon: "branch" },
-    lark_task: { key: "lark_task", title: "任务进展", icon: "check" },
-    lark_message: { key: "lark_message", title: "协作沟通", icon: "chat" }
+    github: { key: "github", title: "github代码提交情况", icon: "branch" },
+    lark_message: { key: "lark_message", title: "飞书SDD测试群协作沟通情况", icon: "chat" }
   };
   var SOURCE_LABELS = {
     github: "GitHub 代码提交",
-    lark_task: "飞书任务",
+    lark_task: "飞书任务清单",
     lark_message: "飞书消息"
   };
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var els = {
     app: $("#app"), dateList: $("#dateList"), stats: $("#stats"), notice: $("#notice"),
-    filters: $("#filters"), members: $("#members"), planCard: $("#planCard"),
+    filters: $("#filters"), members: $("#members"), taskCard: $("#taskCard"),
+    summaryCard: $("#summaryCard"),
+    planCard: $("#planCard"),
     issueCard: $("#issueCard"),
     pageTitle: $("#pageTitle"),
     pageSub: $("#pageSub"), pageFoot: $("#pageFoot"), themeBtn: $("#themeBtn"),
-    themeIcon: $("#themeIcon"), menuBtn: $("#menuBtn"), scrim: $("#scrim"), sidebar: $("#sidebar")
+    themeIcon: $("#themeIcon"), menuBtn: $("#menuBtn"), scrim: $("#scrim"), sidebar: $("#sidebar"),
+    logoutBtn: $("#logoutBtn")
   };
 
   var state = { date: __INITIAL_DATE__, member: "all" };
@@ -368,12 +375,13 @@ svg{display:block}
   function weekday(iso, style) {
     return new Date(iso + "T00:00:00").toLocaleDateString("zh-CN", { weekday: style });
   }
-  function totalRecords(m) { return m.commits.length + m.tasks.length + m.messages.length; }
+  function totalRecords(m) { return m.commits.length + m.messages.length; }
 
   /* --- 侧栏：历史日期 --- */
   function renderDateList() {
     els.dateList.innerHTML = REPORTS.map(function (r) {
-      var records = r.members.reduce(function (a, m) { return a + totalRecords(m); }, 0);
+      var records = r.members.reduce(function (a, m) { return a + totalRecords(m); }, 0) +
+        (r.task_list ? r.task_list.subtasks.length : 0);
       var current = r.date === state.date;
       return '<button class="date-btn" type="button" data-date="' + r.date + '"' +
         (current ? ' aria-current="true"' : "") + '>' +
@@ -386,8 +394,8 @@ svg{display:block}
   /* --- 顶部信息 --- */
   function renderHeader(report) {
     els.pageTitle.textContent = report.members.length === 1
-      ? report.members[0].name + "的工作日报"
-      : report.team_name + " · 工作日报";
+      ? report.members[0].name + "的智能日报"
+      : report.team_name + " · 智能日报";
     els.pageSub.textContent = report.date + " " + weekday(report.date, "long") + " · 生成于 " + report.generated_at;
     els.pageFoot.innerHTML = "智能日报生成器 · 浏览器看板，数据来源：GitHub · 飞书任务 · 飞书消息。" +
       "<br>邮件通道使用项目原有的内联样式模板。";
@@ -395,14 +403,16 @@ svg{display:block}
 
   /* --- 概览统计 --- */
   function renderStats(report) {
-    var commits = 0, tasks = 0, messages = 0, active = 0;
+    var commits = 0, messages = 0, active = 0, legacyTasks = 0;
     report.members.forEach(function (m) {
-      commits += m.commits.length; tasks += m.tasks.length; messages += m.messages.length;
+      commits += m.commits.length; messages += m.messages.length;
+      legacyTasks += (m.tasks || []).length;  // 旧数据回退：无 task_list 时沿用历史任务变更数
       if (totalRecords(m) > 0) active += 1;
     });
+    var tasks = report.task_list ? report.task_list.subtasks.length : legacyTasks;
     var items = [
       { icon: "branch", label: "代码提交", value: commits },
-      { icon: "check", label: "任务变更", value: tasks },
+      { icon: "check", label: "清单任务", value: tasks },
       { icon: "chat", label: "协作沟通", value: messages },
       { icon: "users", label: "活跃成员", value: active }
     ];
@@ -440,60 +450,46 @@ svg{display:block}
 
   /* --- 单条记录渲染 --- */
   function commitItem(c) {
+    var title = c.url
+      ? '<a class="commit-link" href="' + esc(c.url) + '" target="_blank" rel="noopener">' +
+        esc(c.message) + ' <span class="commit-ext">查看提交 ↗</span></a>'
+      : esc(c.message);
+    var filesHtml = "";
+    if (c.files && c.files.length) {
+      var inline = c.files.some(function (f) { return f.added && f.added.length; });
+      if (inline) {
+        filesHtml = '<div class="commit-files">' + c.files.map(function (f) {
+          var name = f.url
+            ? '<a class="commit-fname" href="' + esc(f.url) + '" target="_blank" rel="noopener">' + esc(f.filename) + "</a>"
+            : '<span class="commit-fname">' + esc(f.filename) + "</span>";
+          var lines = (f.added || []).map(function (ln) {
+            return '<div class="commit-line"><span class="commit-plus">+</span> ' + esc(ln) + "</div>";
+          }).join("");
+          return '<div class="commit-file">📄 ' + name +
+            ' <span class="diff-add">+' + f.additions + '</span><span class="diff-del">−' + f.deletions + "</span>" +
+            (lines ? '<div class="commit-diff">' + lines + "</div>" : "") + "</div>";
+        }).join("") + "</div>";
+      } else {
+        filesHtml = '<div class="commit-filelist">改动较大，查看文件：' + c.files.map(function (f) {
+          return f.url
+            ? '<a href="' + esc(f.url) + '" target="_blank" rel="noopener">' + esc(f.filename) + "</a>"
+            : esc(f.filename);
+        }).join(" · ") + "</div>";
+      }
+    }
     return '<li class="record">' +
       '<div class="record-top"><span class="repo">' + esc(c.repo) + "</span></div>" +
-      '<span class="record-title">' + esc(c.message) + "</span>" +
+      '<span class="record-title">' + title + "</span>" +
       '<div class="record-meta">' +
         '<span class="diff-add">+' + c.additions + "</span>" +
         '<span class="diff-del">−' + c.deletions + "</span>" +
         "<span>" + c.files_changed + " 个文件</span>" +
         '<span class="time">' + esc(c.time) + "</span>" +
-      "</div></li>";
+      "</div>" + filesHtml + "</li>";
   }
-  function taskItem(t) {
-    var hasSubs = t.subtasks && t.subtasks.length > 0;
-    var statusHtml;
-    var metaHtml = "";
-    if (t.status_from) {
-      statusHtml =
-        '<span class="status-from">' + esc(t.status_from) + "</span>" +
-        '<span class="arrow" aria-hidden="true">→</span>' +
-        '<span class="status-to">' + esc(t.status_to) + "</span>";
-      metaHtml = '<span class="record-meta"><span class="time">' + esc(t.time) + "</span></span>";
-    } else {
-      statusHtml = '<span class="status-to">' + esc(t.status_to) + "</span>";
-    }
-    var toggleHtml = "";
-    var subtasksHtml = "";
-    if (hasSubs) {
-      toggleHtml =
-        '<button class="task-toggle" type="button" aria-expanded="false">' +
-        '<span class="toggle-arrow" aria-hidden="true">▶</span>' +
-        "<span>子任务 " + esc(t.progress || "") + "</span>" +
-        "</button>";
-      subtasksHtml =
-        '<div class="subtasks" hidden><ul class="subtask-list">' +
-        t.subtasks.map(function(s) {
-          var icon = s.status_to === "已完成" ? "✅" : "⬜";
-          return '<li class="subtask-item">' +
-            '<span class="subtask-icon">' + icon + '</span>' +
-            '<span class="subtask-title">' + esc(s.title) + '</span>' +
-            '<span class="subtask-status">' + esc(s.status_to) + '</span>' +
-            '</li>';
-        }).join("") +
-        '</ul></div>';
-    }
-    return '<li class="record task-record' + (hasSubs ? " has-subtasks" : "") + '">' +
-      '<div class="status">' + statusHtml + "</div>" +
-      '<span class="record-title">' + esc(t.title) + "</span>" +
-      toggleHtml +
-      subtasksHtml +
-      metaHtml +
-      "</li>";
-  }
-  function messageItem(m) {
+  function messageItem(m, idx) {
     return '<li class="record">' +
-      '<div class="record-top"><span class="chat">' + esc(m.chat_name) + '</span><span class="time" style="font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums">' + esc(m.time) + "</span></div>" +
+      '<div class="record-top"><span class="chat">沟通记录' + (idx + 1) + '</span><span class="time" style="font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums">' + esc(m.time) + "</span></div>" +
       '<span class="record-title">' + esc(m.content) + "</span>" +
       "</li>";
   }
@@ -503,7 +499,7 @@ svg{display:block}
     var s = SOURCES[source];
     var failed = report.failed_sources.indexOf(source) !== -1;
     var body, count = "";
-    var records = source === "github" ? member.commits : source === "lark_task" ? member.tasks : member.messages;
+    var records = source === "github" ? member.commits : member.messages;
 
     if (failed) {
       body = '<p class="failed">' + icon("alert", 16) + "<span>数据获取失败</span></p>";
@@ -513,7 +509,7 @@ svg{display:block}
       body = '<p class="empty">' + icon("inbox", 16) + "<span>今日无记录</span></p>";
     } else {
       count = '<span class="module-count">' + records.length + "</span>";
-      var render = source === "github" ? commitItem : source === "lark_task" ? taskItem : messageItem;
+      var render = source === "github" ? commitItem : messageItem;
       body = '<ul class="records">' + records.map(render).join("") + "</ul>";
     }
 
@@ -538,7 +534,6 @@ svg{display:block}
       "</header>" +
       '<div class="modules">' +
         module("github", m, report) +
-        module("lark_task", m, report) +
         module("lark_message", m, report) +
       "</div></article>";
   }
@@ -548,13 +543,39 @@ svg{display:block}
     els.members.innerHTML = list.map(function (m) { return memberCard(m, report); }).join("");
   }
 
+  /* --- 今日任务清单卡片（团队级，来自飞书 M月D日任务清单） --- */
+  function renderTaskCard(report) {
+    var tl = report.task_list;
+    var failed = tl === null && report.failed_sources.indexOf("lark_task") !== -1;
+    var head =
+      '<div class="plan-head">' + icon("check", 18) +
+        '<span class="plan-title">今日任务清单</span>' +
+        (tl && tl.progress ? '<span class="plan-count">' + esc(tl.progress) + " 已完成</span>" : "") +
+      "</div>";
+    var body;
+    if (tl && tl.subtasks.length) {
+      body = '<ul class="plan-list">' + tl.subtasks.map(function (s) {
+        var ok = s.status_to === "已完成";
+        return '<li class="plan-item">' +
+          '<span class="plan-text">' + (ok ? "✅ " : "⬜ ") + esc(s.title) + "</span>" +
+          (ok ? '<span class="issue-status ok">已完成</span>' : "") +
+          "</li>";
+      }).join("") + "</ul>";
+    } else if (failed) {
+      body = '<p class="plan-empty">' + icon("alert", 16) + "<span>任务清单数据获取失败</span></p>";
+    } else {
+      body = '<p class="plan-empty">' + icon("inbox", 16) +
+        "<span>暂无任务，在群里发「明天：要做的任务」即可自动布置</span></p>";
+    }
+    els.taskCard.innerHTML = '<div class="plan-card">' + head + body + "</div>";
+  }
+
   /* --- 明日计划卡片 --- */
   function planItem(p) {
-    var owner = '<span class="plan-owner">' + esc(p.owner || "团队") + "</span>";
     var delBtn = p.source === "manual" && p.id
       ? '<button class="plan-del" type="button" data-id="' + p.id + '" aria-label="删除该计划">✕</button>'
       : "";
-    return '<li class="plan-item">' + owner +
+    return '<li class="plan-item">' +
       '<span class="plan-text">' + esc(p.title) + "</span>" +
       delBtn + "</li>";
   }
@@ -670,6 +691,20 @@ svg{display:block}
     }
   }
 
+  /* --- 今日总结卡片（AI 摘要，空则不渲染） --- */
+  function renderSummary(report) {
+    var s = (report.summary || "").trim();
+    els.summaryCard.innerHTML = s
+      ? '<div class="plan-card">' +
+          '<div class="plan-head">' + icon("info", 18) +
+            '<span class="plan-title">今日总结</span>' +
+            '<span class="plan-count">AI 生成</span>' +
+          "</div>" +
+          '<p class="summary-text">' + esc(s) + "</p>" +
+        "</div>"
+      : "";
+  }
+
   function renderAll() {
     var report = currentReport();
     renderDateList();
@@ -678,6 +713,8 @@ svg{display:block}
     renderNotice(report);
     renderFilters(report);
     renderMembers(report);
+    renderSummary(report);
+    renderTaskCard(report);
     renderPlans(report);
     renderIssues(report);
   }
@@ -693,6 +730,12 @@ svg{display:block}
     document.documentElement.dataset.theme = next;
     try { localStorage.setItem("dr-theme", next); } catch (e) {}
     paintTheme();
+  });
+
+  els.logoutBtn.addEventListener("click", function () {
+    fetch("api/auth/logout", { method: "POST" })
+      .catch(function () {})
+      .finally(function () { location.href = "/login"; });
   });
 
   /* --- 抽屉导航 --- */
@@ -724,20 +767,6 @@ svg{display:block}
     renderFilters(currentReport());
     renderMembers(currentReport());
   });
-  /* 任务子任务折叠面板：点击切换展开/收起 */
-  els.members.addEventListener("click", function (e) {
-    var btn = e.target.closest(".task-toggle");
-    if (!btn) return;
-    var li = btn.closest(".task-record");
-    if (!li) return;
-    var panel = li.querySelector(".subtasks");
-    if (!panel) return;
-    var willOpen = panel.hidden;
-    panel.hidden = !willOpen;
-    li.classList.toggle("subtasks-open", willOpen);
-    btn.setAttribute("aria-expanded", String(willOpen));
-  });
-
   /* 明日计划：添加 / 删除（乐观更新：改本地数据立即重渲染，下一轮自动刷新与服务端同步） */
   els.planCard.addEventListener("submit", function (e) {
     var form = e.target.closest("#planForm");

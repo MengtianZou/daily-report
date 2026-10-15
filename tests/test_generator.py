@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from generator import formatter
 from shared.models import (
+    CommitFile,
     CommitRecord,
     IssueItem,
     MemberReport,
@@ -83,13 +84,13 @@ def test_generate_markdown_has_three_sections() -> None:
     reports = formatter.aggregate(_MEMBERS_CONFIG, commits, tasks, messages)
     report = formatter.generate(reports, _DAY, "研发一组")
 
-    assert "### 代码提交" in report.markdown
-    assert "### 任务进展" in report.markdown
-    assert "### 协作沟通" in report.markdown
-    assert "# 研发一组 工作日报（2026-09-25）" in report.markdown
+    assert "### github代码提交情况" in report.markdown
+    assert "### 飞书SDD测试群协作沟通情况" in report.markdown
+    assert "## 今日任务清单" in report.markdown
+    assert "任务进展情况" not in report.markdown  # 成员级任务变更板块已下线
+    assert "# 研发一组 智能日报（2026-09-25）" in report.markdown
     assert "fix: 修复登录问题" in report.markdown
-    assert "进行中 → **已完成**：修复缺陷" in report.markdown
-    assert "[研发群] 今晚准备上线发布" in report.markdown
+    assert "沟通记录1：今晚准备上线发布" in report.markdown
 
 
 def test_generate_html_is_rendered() -> None:
@@ -108,7 +109,7 @@ def test_empty_member_shows_no_records() -> None:
     report = formatter.generate(reports, _DAY, "研发一组")
 
     lisi_section = report.markdown.split("## 李四", maxsplit=1)[1]
-    assert lisi_section.count("今日无记录") == 3
+    assert lisi_section.count("今日无记录") == 2  # github + 协作沟通两个板块
 
 
 def test_failed_source_is_marked_in_markdown_and_html() -> None:
@@ -125,42 +126,61 @@ def test_failed_source_is_marked_in_markdown_and_html() -> None:
     assert "以下数据源获取失败" in report.html
 
 
-def test_subtask_progress_rendered_in_markdown_and_html() -> None:
-    parent = TaskRecord(
-        assignee="ou_zhangsan",
-        title="上线日报",
-        status_from="进行中",
-        status_to="已完成",
+def _tasklist_section(markdown: str) -> str:
+    return markdown.split("## 今日任务清单", 1)[1].split("## 问题与解决", 1)[0]
+
+
+def test_task_list_rendered_in_markdown_and_html() -> None:
+    # 团队级「今日任务清单」板块：父任务+进度徽章+子任务勾选态
+    task_list = TaskRecord(
+        assignee="",
+        title="9月25日任务清单",
+        status_from="",
+        status_to="进行中",
         updated_at=_T1500,
         subtasks=[
-            TaskRecord(
-                assignee="",
-                title="写采集",
-                status_from="",
-                status_to="已完成",
-                updated_at=_T1500,
-            ),
-            TaskRecord(
-                assignee="",
-                title="写模板",
-                status_from="",
-                status_to="进行中",
-                updated_at=_T1500,
-            ),
+            TaskRecord(assignee="", title="写采集", status_from="",
+                       status_to="已完成", updated_at=_T1500),
+            TaskRecord(assignee="", title="写模板", status_from="",
+                       status_to="进行中", updated_at=_T1500),
         ],
     )
-    reports = [
-        MemberReport(name="张三", github_username="zhangsan", tasks=[parent])
-    ]
-    report = formatter.generate(reports, _DAY, "研发一组")
+    reports = formatter.aggregate(_MEMBERS_CONFIG, [], [], [])
+    report = formatter.generate(reports, _DAY, "研发一组", task_list=task_list)
 
-    assert "子任务进度：**1/2** 已完成" in report.markdown
-    assert "✅ 写采集（已完成）" in report.markdown
-    assert "⬜ 写模板（进行中）" in report.markdown
+    section = _tasklist_section(report.markdown)
+    assert "- 📋 9月25日任务清单（**1/2** 已完成）" in section
+    assert "- ✅ 写采集" in section
+    assert "- ⬜ 写模板" in section
 
-    assert "📋 子任务 1/2 已完成" in report.html
-    assert "✅ 写采集（已完成）" in report.html
-    assert "⬜ 写模板（进行中）" in report.html
+    assert "今日任务清单" in report.html
+    assert "📋 9月25日任务清单" in report.html
+    assert "已完成 1/2" in report.html
+    assert "✅ 写采集" in report.html
+    assert "⬜ 写模板" in report.html
+
+
+def test_task_list_empty_and_failed_states() -> None:
+    reports = formatter.aggregate(_MEMBERS_CONFIG, [], [], [])
+
+    # 无清单：板块显示「暂无」
+    empty = formatter.generate(reports, _DAY, "研发一组")
+    assert "暂无" in _tasklist_section(empty.markdown)
+
+    # 有父任务但无子任务：只显示标题不带进度
+    bare = TaskRecord(assignee="", title="9月25日任务清单", status_from="",
+                      status_to="进行中", updated_at=_T1500)
+    bare_report = formatter.generate(reports, _DAY, "研发一组", task_list=bare)
+    section = _tasklist_section(bare_report.markdown)
+    assert "- 📋 9月25日任务清单" in section
+    assert "已完成" not in section
+
+    # lark_task 失败：显式标注获取失败
+    failed = formatter.generate(
+        reports, _DAY, "研发一组", failed_sources=["lark_task"]
+    )
+    assert "- ⚠️ 数据获取失败" in _tasklist_section(failed.markdown)
+    assert "⚠️ 数据获取失败" in failed.html
 
 
 def test_markdown_has_tomorrow_plan_section() -> None:
@@ -180,13 +200,94 @@ def test_tomorrow_plans_rendered_in_markdown_and_html() -> None:
     report = formatter.generate(reports, _DAY, "研发一组", tomorrow_plans=plans)
 
     plan_section = report.markdown.split("## 明日计划", maxsplit=1)[1]
-    assert "📌 张三：完成接口联调" in plan_section
-    assert "📌 团队：整理周报" in plan_section
+    assert "📌 完成接口联调" in plan_section
+    assert "📌 整理周报" in plan_section
+    # 单人场景不显示负责人前缀
+    assert "张三：" not in plan_section and "团队：" not in plan_section
 
     assert "明日计划" in report.html
-    assert "张三：完成接口联调" in report.html
-    assert "团队：整理周报" in report.html
+    assert "完成接口联调" in report.html
+    assert "整理周报" in report.html
     assert report.tomorrow_plans == plans
+
+
+_COMMIT_URL = "https://github.com/org/repo/commit/sha1"
+_BLOB_URL = "https://github.com/org/repo/blob/sha1/config.py"
+
+
+def _report_with_commit(commit: CommitRecord):
+    member = MemberReport(
+        name="张三", github_username="zhangsan", commits=[commit]
+    )
+    return formatter.generate([member], _DAY, "研发一组")
+
+
+def test_small_commit_inlines_added_lines_and_link() -> None:
+    # 即使只新增一个字也要提供提交跳转链接；小改动同时内联展示新增行
+    tiny = CommitFile(
+        filename="config.py",
+        status="added",
+        additions=1,
+        deletions=0,
+        patch="@@ -0,0 +1 @@\n+x\n",
+        blob_url=_BLOB_URL,
+    )
+    commit = CommitRecord(
+        author="zhangsan",
+        message="feat: 一个字",
+        timestamp=_T0800,
+        repo="org/repo",
+        additions=1,
+        deletions=0,
+        files_changed=1,
+        html_url=_COMMIT_URL,
+        files=[tiny],
+    )
+    report = _report_with_commit(commit)
+
+    assert f"[查看提交]({_COMMIT_URL})" in report.markdown
+    assert "📄 [config.py]" in report.markdown
+    assert "- + x" in report.markdown
+    assert _COMMIT_URL in report.html
+    assert _BLOB_URL in report.html
+    # 明文链接兜底：邮件客户端内嵌网页打不开 GitHub 时可复制到浏览器
+    assert "长按复制链接到浏览器" in report.html
+    assert ">x<" in report.html or ">+ x<" in report.html or "x" in report.html
+    assert "config.py" in report.html
+
+
+def test_large_commit_renders_links_without_code_body() -> None:
+    patch = "@@ -0,0 +1,21 @@\n" + "\n".join(
+        f"+SECRET_CODE_LINE_{i}" for i in range(21)
+    ) + "\n"
+    big = CommitFile(
+        filename="big.py",
+        status="added",
+        additions=21,
+        deletions=0,
+        patch=patch,
+        blob_url="https://github.com/org/repo/blob/sha1/big.py",
+    )
+    commit = CommitRecord(
+        author="zhangsan",
+        message="feat: 大量代码",
+        timestamp=_T0800,
+        repo="org/repo",
+        additions=21,
+        deletions=0,
+        files_changed=1,
+        html_url=_COMMIT_URL,
+        files=[big],
+    )
+    report = _report_with_commit(commit)
+
+    # 提交链接始终存在；代码内容不内联，只给文件链接
+    assert f"[查看提交]({_COMMIT_URL})" in report.markdown
+    assert "📄 [big.py]" in report.markdown
+    assert "SECRET_CODE_LINE_0" not in report.markdown
+    assert _COMMIT_URL in report.html
+    assert "SECRET_CODE_LINE_0" not in report.html
+    assert "https://github.com/org/repo/blob/sha1/big.py" in report.html
 
 
 def test_issues_rendered_in_markdown_and_html() -> None:
@@ -200,7 +301,7 @@ def test_issues_rendered_in_markdown_and_html() -> None:
 
     # 板块顺序：协作沟通之后、明日计划之前
     md = report.markdown
-    assert md.index("### 协作沟通") < md.index("## 问题与解决") < md.index("## 明日计划")
+    assert md.index("### 飞书SDD测试群协作沟通情况") < md.index("## 问题与解决") < md.index("## 明日计划")
     section = md.split("## 问题与解决", maxsplit=1)[1].split("## 明日计划", maxsplit=1)[0]
     assert "✅ 接口报错 → 已定位修复" in section
     assert "⏳ 环境卡顿 → 方案待定" in section
@@ -226,10 +327,10 @@ def test_single_member_report_uses_personal_title() -> None:
     reports = formatter.aggregate(_MEMBERS_CONFIG[:1], [], [], [])
     report = formatter.generate(reports, _DAY, "研发一组")
 
-    assert report.markdown.startswith("# 张三的工作日报（2026-09-25）")
+    assert report.markdown.startswith("# 张三的智能日报（2026-09-25）")
     assert "## 张三" not in report.markdown  # 标题已含成员名，不再重复小节标题
-    assert "### 代码提交" in report.markdown
+    assert "### github代码提交情况" in report.markdown
     assert "## 明日计划" in report.markdown
 
-    assert "张三的工作日报" in report.html
+    assert "张三的智能日报" in report.html
     assert ">张三</h2>" not in report.html

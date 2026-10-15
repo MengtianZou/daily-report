@@ -83,3 +83,43 @@ def test_new_report_data_roundtrip(tmp_path) -> None:
     storage.save_report(sample_report())
     assert len(storage.iter_report_data()) == 1
     storage.close()
+
+
+def test_migrates_legacy_plans_table_idempotently(tmp_path) -> None:
+    """一期 plans 表（无 status/msg_key 列）迁移后可正常读写任务闭环字段。"""
+
+    db_path = tmp_path / "reports.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE plans ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " plan_date TEXT NOT NULL, owner TEXT NOT NULL DEFAULT '',"
+        " title TEXT NOT NULL, created_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO plans (plan_date, owner, title, created_at) "
+        "VALUES ('2026-09-25', '刘政剑', '旧计划', '2026-09-25T18:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    storage = ReportStorage(db_path)
+    columns = {
+        row["name"]
+        for row in storage._conn.execute("PRAGMA table_info(plans)")
+    }
+    assert {"status", "msg_key"} <= columns
+
+    # 旧数据补默认值；新写入携带 status/msg_key 并可回读
+    legacy = storage.iter_plans("2026-09-25")
+    assert legacy[0]["status"] == "待完成"
+    assert legacy[0]["msg_key"] == ""
+
+    storage.save_plan("新计划", "刘政剑", "2026-09-26", msg_key="ou_x|t0")
+    rows = storage.iter_plans("2026-09-26")
+    assert rows[0]["status"] == "待完成"
+    assert rows[0]["msg_key"] == "ou_x|t0"
+
+    # 再次构造不应报错（幂等）
+    storage.close()
+    ReportStorage(db_path).close()
