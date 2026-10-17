@@ -220,6 +220,18 @@ svg{display:block}
 /* 今日总结卡片（AI 摘要，复用 plan-* 基础样式） */
 .summary-text{margin:0;padding:14px 20px 16px;font-size:14px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
 
+/* 任务完成趋势卡片（近 7 个报告日的清单完成度堆叠柱） */
+.trend-body{display:flex;align-items:flex-end;gap:12px;padding:16px 20px 18px;overflow-x:auto}
+.trend-col{flex:1 1 0;min-width:44px;display:grid;justify-items:center;gap:6px}
+.trend-val{font-size:12px;color:var(--ink);font-variant-numeric:tabular-nums}
+.trend-bar{display:flex;flex-direction:column-reverse;width:22px;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--surface)}
+.trend-seg{display:block;width:100%}
+.trend-seg.done{background:var(--success)}
+.trend-seg.todo{background:var(--surface-2)}
+.trend-day{font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
+.trend-week{font-size:12px;color:var(--muted)}
+.trend-col.today .trend-day{color:var(--accent)}
+
 /* 问题与解决卡片（复用 plan-* 基础样式） */
 .issue-status{flex:none;font-size:12px;border-radius:6px;padding:1px 8px;white-space:nowrap;margin-top:1px;border:1px solid transparent}
 .issue-status.ok{color:#16a34a;background:rgba(22,163,74,.12)}
@@ -297,6 +309,7 @@ svg{display:block}
 
     <div class="content">
       <section class="stats" id="stats" aria-label="当日概览"></section>
+      <section id="trendCard" aria-label="任务完成趋势"></section>
       <div class="notice" id="notice" role="status" hidden></div>
       <div class="filters" id="filters" aria-label="按成员筛选"></div>
       <div class="members" id="members"></div>
@@ -357,6 +370,7 @@ svg{display:block}
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var els = {
     app: $("#app"), dateList: $("#dateList"), stats: $("#stats"), notice: $("#notice"),
+    trendCard: $("#trendCard"),
     filters: $("#filters"), members: $("#members"), taskCard: $("#taskCard"),
     summaryCard: $("#summaryCard"),
     planCard: $("#planCard"),
@@ -422,6 +436,77 @@ svg{display:block}
         '<span class="stat-label">' + icon(it.icon, 15) + it.label + "</span>" +
         "</div>";
     }).join("");
+  }
+
+  /* --- 任务完成趋势（近 7 个报告日的清单完成度，前端聚合 /api/reports 已有数据） --- */
+  function dayTaskStats(report) {
+    var tl = report.task_list;
+    if (tl && tl.subtasks && tl.subtasks.length) {
+      return {
+        done: tl.subtasks.filter(function (s) { return s.status_to === "已完成"; }).length,
+        total: tl.subtasks.length
+      };
+    }
+    var legacy = [];  // 旧数据回退：无 task_list 时沿用成员级任务变更记录
+    (report.members || []).forEach(function (m) {
+      (m.tasks || []).forEach(function (t) { legacy.push(t); });
+    });
+    if (!legacy.length) { return null; }
+    return {
+      done: legacy.filter(function (t) { return t.status_to === "已完成"; }).length,
+      total: legacy.length
+    };
+  }
+  function localIso(d) {
+    var p = function (n) { return String(n).padStart(2, "0"); };
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  }
+  function renderTrend() {
+    var days = [];  // REPORTS 按日期倒序；取最近 7 个有任务数据的报告日，正序展示
+    for (var i = 0; i < REPORTS.length && days.length < 7; i++) {
+      var st = dayTaskStats(REPORTS[i]);
+      if (st && st.total) { days.push({ date: REPORTS[i].date, done: st.done, total: st.total }); }
+    }
+    days.reverse();
+    var titleHtml = icon("check", 18) + '<span class="plan-title">任务完成趋势</span>';
+    if (!days.length) {
+      els.trendCard.innerHTML =
+        '<div class="plan-card">' +
+          '<div class="plan-head">' + titleHtml + '<span class="plan-count">近 7 天</span></div>' +
+          '<p class="plan-empty">' + icon("inbox", 16) + "<span>暂无任务数据，任务清单采集后自动出现</span></p>" +
+        "</div>";
+      return;
+    }
+    var tDone = 0, tTotal = 0, maxTotal = 0;
+    days.forEach(function (d) {
+      tDone += d.done; tTotal += d.total;
+      if (d.total > maxTotal) { maxTotal = d.total; }
+    });
+    var pct = tTotal ? Math.round((tDone / tTotal) * 100) : 0;
+    var unit = 72 / Math.max(maxTotal, 1);  // 像素/任务，柱区最高 72px
+    var todayIso = localIso(new Date());
+    var cols = days.map(function (d) {
+      var doneH = Math.round(d.done * unit);
+      var todoH = Math.round(d.total * unit) - doneH;
+      var isToday = d.date === todayIso;
+      return '<div class="trend-col' + (isToday ? " today" : "") +
+        '" title="' + esc(d.date) + "：完成 " + d.done + " / 共 " + d.total + '">' +
+        '<span class="trend-val">' + d.done + "/" + d.total + "</span>" +
+        '<span class="trend-bar" style="height:' + Math.round(d.total * unit) + 'px">' +
+          '<span class="trend-seg todo" style="height:' + todoH + 'px"></span>' +
+          '<span class="trend-seg done" style="height:' + doneH + 'px"></span>' +
+        "</span>" +
+        '<span class="trend-day">' + esc(d.date.slice(5)) + "</span>" +
+        '<span class="trend-week">' + (isToday ? "今天" : weekday(d.date, "short")) + "</span>" +
+        "</div>";
+    }).join("");
+    els.trendCard.innerHTML =
+      '<div class="plan-card">' +
+        '<div class="plan-head">' + titleHtml +
+          '<span class="plan-count">' + days.length + " 天 · 完成率 " + pct + "%</span>" +
+        "</div>" +
+        '<div class="trend-body">' + cols + "</div>" +
+      "</div>";
   }
 
   /* --- 数据源失败提示 --- */
@@ -710,6 +795,7 @@ svg{display:block}
     renderDateList();
     renderHeader(report);
     renderStats(report);
+    renderTrend();
     renderNotice(report);
     renderFilters(report);
     renderMembers(report);

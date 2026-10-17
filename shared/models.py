@@ -121,3 +121,7 @@ class DailyReport:
     issues: list[IssueItem] = field(default_factory=list)  # 问题与解决
     task_list: TaskRecord | None = None  # 当日任务清单（团队级板块）
     summary: str = ""  # AI 生成的今日总结（未启用/生成失败时为空，三端均不渲染）
+    task_trend: list[dict] = field(default_factory=list)
+    # 任务完成趋势（近 N 个报告日聚合）：[{date, done, total, pct}]，日期正序；
+    # 由管道在生成前聚合历史快照与当日实时数据，邮件/飞书/Markdown 三端共用
+    # （看板另有前端实时聚合版本，不读此字段）

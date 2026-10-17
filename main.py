@@ -796,10 +796,20 @@ def run_pipeline(
         config.get_path("ai", {}) or {}, failed_sources=failed,
     )
 
+    # 任务完成趋势：聚合近 7 个报告日（历史快照 + 今日实时清单），推送三端共用
+    with ReportStorage(config["storage"]["sqlite_path"]) as storage:
+        history = storage.iter_report_data()
+    today_tl = (
+        {"subtasks": [{"status_to": s.status_to} for s in task_list.subtasks]}
+        if task_list and task_list.subtasks
+        else None
+    )
+    task_trend = formatter.compute_task_trend(history, today.isoformat(), today_tl)
+
     report = formatter.generate(
         members, today, config.team_name, failed_sources=failed,
         tomorrow_plans=tomorrow_plans, issues=issues, task_list=task_list,
-        summary=summary,
+        summary=summary, task_trend=task_trend,
     )
 
     with ReportStorage(config["storage"]["sqlite_path"]) as storage:

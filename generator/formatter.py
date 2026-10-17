@@ -158,6 +158,73 @@ def report_title(members: list[MemberReport], team_name: str) -> str:
     return f"{team_name} 智能日报"
 
 
+def _day_task_stats(report: dict) -> dict | None:
+    """从一份日报字典统计当日任务完成度，无任务数据返回 None。
+
+    优先取团队级 task_list 子任务快照；旧数据回退成员级 tasks 变更记录。
+    """
+
+    tl = report.get("task_list")
+    if tl and tl.get("subtasks"):
+        subs = tl["subtasks"]
+        done = sum(1 for s in subs if s.get("status_to") == "已完成")
+        return {"done": done, "total": len(subs)}
+    legacy = [t for m in report.get("members", []) for t in m.get("tasks", [])]
+    if legacy:
+        done = sum(1 for t in legacy if t.get("status_to") == "已完成")
+        return {"done": done, "total": len(legacy)}
+    return None
+
+
+def compute_task_trend(
+    history: list[dict],
+    today_iso: str,
+    today_task_list: dict | None,
+    days: int = 7,
+) -> list[dict]:
+    """聚合最近 N 个报告日的任务完成度，供推送三端渲染趋势板块。
+
+    history 为 storage.iter_report_data() 的倒序日报字典；今日以实时采集
+    数据为准（不读历史行），无任务数据的日子跳过。返回日期正序的
+    [{date, done, total, pct}]。
+    """
+
+    picked: list[dict] = []
+    for report in history:
+        if report.get("date") == today_iso:
+            continue  # 今日以实时数据为准
+        if len(picked) >= days - 1:
+            break
+        stats = _day_task_stats(report)
+        if stats:
+            picked.append({"date": report["date"], **stats})
+
+    today_stats = _day_task_stats(
+        {"date": today_iso, "task_list": today_task_list, "members": []}
+    )
+    picked.reverse()  # 历史为倒序，先转正序再补今日
+    if today_stats:
+        picked.append({"date": today_iso, **today_stats})
+    for day in picked:
+        day["pct"] = round(day["done"] / day["total"] * 100) if day["total"] else 0
+    return picked
+
+
+def _render_trend(trend: list[dict]) -> list[str]:
+    """渲染「任务完成趋势」板块行：完成率汇总 + 每日文本进度条。"""
+
+    if not trend:
+        return ["暂无"]
+    total = sum(d["total"] for d in trend)
+    done = sum(d["done"] for d in trend)
+    pct = round(done / total * 100) if total else 0
+    lines = [f"- 近 {len(trend)} 天完成率 **{pct}%**（完成 {done}/{total}）"]
+    for d in trend:
+        bar = "▓" * d["done"] + "░" * (d["total"] - d["done"])
+        lines.append(f"- {d['date'][5:]} {bar} {d['done']}/{d['total']}")
+    return lines
+
+
 def build_markdown(
     team_name: str,
     report_date: date,
@@ -167,6 +234,7 @@ def build_markdown(
     issues: list[IssueItem] | None = None,
     task_list: TaskRecord | None = None,
     summary: str = "",
+    task_trend: list[dict] | None = None,
 ) -> str:
     """生成完整 Markdown 日报。"""
 
@@ -204,6 +272,10 @@ def build_markdown(
     lines.extend(_render_task_list(task_list, "lark_task" in failed))
     lines.append("")
 
+    lines.extend(["## 任务完成趋势", ""])
+    lines.extend(_render_trend(list(task_trend or [])))
+    lines.append("")
+
     lines.extend(["## 问题与解决", ""])
     lines.extend(_render_issues(list(issues or [])))
     lines.append("")
@@ -224,6 +296,7 @@ def generate(
     issues: list[IssueItem] | None = None,
     task_list: TaskRecord | None = None,
     summary: str = "",
+    task_trend: list[dict] | None = None,
 ) -> DailyReport:
     """根据成员数据生成日报（design.md §4.2 生成层接口）。"""
 
@@ -231,6 +304,7 @@ def generate(
         team_name, report_date, members,
         failed_sources=failed_sources, tomorrow_plans=tomorrow_plans,
         issues=issues, task_list=task_list, summary=summary,
+        task_trend=task_trend,
     )
     html = render_report_html(
         team_name, report_date, members,
@@ -239,6 +313,7 @@ def generate(
         report_title=report_title(members, team_name),
         show_member_names=len(members) > 1,
         summary=summary,
+        task_trend=task_trend,
     )
     return DailyReport(
         date=report_date,
@@ -252,4 +327,5 @@ def generate(
         issues=list(issues or []),
         task_list=task_list,
         summary=summary,
+        task_trend=list(task_trend or []),
     )

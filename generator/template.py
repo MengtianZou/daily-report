@@ -101,6 +101,30 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     </section>
     {% endif %}
 
+    <section style="padding:18px 28px;border-top:1px solid #eef0f3;">
+      <h2 style="margin:0 0 10px;font-size:16px;color:#2f6fed;">任务完成趋势</h2>
+      {% set trend_total = task_trend | map(attribute='total') | sum %}
+      {% set trend_done = task_trend | map(attribute='done') | sum %}
+      {% if task_trend %}
+      <div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:8px;">近 {{ task_trend | length }} 天完成率 {{ ((trend_done * 100 / trend_total) | round) | int }}%（完成 {{ trend_done }}/{{ trend_total }}）</div>
+      <table style="width:100%;border-collapse:collapse;">
+        {% for d in task_trend %}
+        <tr>
+          <td style="width:56px;font-size:12px;color:#6b7280;padding:3px 8px 3px 0;white-space:nowrap;">{{ d.date[5:] }}</td>
+          <td>
+            <div style="background:#eef0f3;border-radius:6px;height:12px;overflow:hidden;">
+              <div style="width:{{ d.pct }}%;background:#16a34a;height:12px;border-radius:6px;font-size:0;line-height:12px;">&nbsp;</div>
+            </div>
+          </td>
+          <td style="width:48px;font-size:12px;color:#374151;text-align:right;white-space:nowrap;">{{ d.done }}/{{ d.total }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <p style="margin:0;font-size:13px;color:#9aa0a6;">暂无</p>
+      {% endif %}
+    </section>
+
     {% if issues %}
     <section style="padding:18px 28px;border-top:1px solid #eef0f3;">
       <h2 style="margin:0 0 10px;font-size:16px;color:#2f6fed;">问题与解决</h2>
@@ -142,6 +166,7 @@ def render_report_html(
     report_title: str | None = None,
     show_member_names: bool = True,
     summary: str = "",
+    task_trend: list[dict] | None = None,
 ) -> str:
     """渲染独立 HTML 文档。"""
 
@@ -157,5 +182,6 @@ def render_report_html(
         task_list=task_list,
         show_member_names=show_member_names,
         summary=summary,
+        task_trend=task_trend or [],
         diff_inline=diff_inline,
     )

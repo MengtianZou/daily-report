@@ -84,6 +84,9 @@ ai:
 storage:
   sqlite_path: data/reports.db
 dashboard:
+  auto_refresh:
+    enabled: true
+    interval_seconds: 15
   member_accounts:
     刘政剑:
     - liuzhengjian
