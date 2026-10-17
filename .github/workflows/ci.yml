@@ -1,0 +1,28 @@
+# CI：每次 push / PR 自动在云端跑全量测试
+# 教学用途：这是最小可用的「持续集成」工作流
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # 项目使用了 Windows 专有的 msvcrt 单实例锁，故与本地环境保持一致
+    runs-on: windows-latest
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 运行全量测试
+        run: python -m pytest -q

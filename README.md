@@ -1,5 +1,7 @@
 # 智能日报生成器
 
+[![CI](https://github.com/chenpingan6158-a11y/IDNG.github.io/actions/workflows/ci.yml/badge.svg)](https://github.com/chenpingan6158-a11y/IDNG.github.io/actions/workflows/ci.yml)
+
 自动汇总团队成员的 GitHub 提交、飞书任务进展、飞书群聊关键词消息，生成结构化日报，支持邮件 / 飞书机器人推送与浏览器看板展示。
 
 ## 功能特性
