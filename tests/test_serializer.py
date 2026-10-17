@@ -49,7 +49,7 @@ def test_report_to_dict_matches_dashboard_contract() -> None:
         "title": "飞书任务采集",
         "status_from": "进行中",
         "status_to": "已完成",
-        "time": "15:10",
+        "time": _local_hhmm(datetime(2026, 9, 26, 7, 10, tzinfo=timezone.utc)),
         "progress": "",
         "subtasks": [],
     }
@@ -58,7 +58,7 @@ def test_report_to_dict_matches_dashboard_contract() -> None:
     assert message == {
         "chat_name": "SDD测试",
         "content": "模板已联调通过",
-        "time": "11:02",
+        "time": _local_hhmm(datetime(2026, 9, 26, 3, 2, tzinfo=timezone.utc)),
     }
 
 
