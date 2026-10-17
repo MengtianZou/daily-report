@@ -9,13 +9,24 @@ from shared.models import CommitFile, CommitRecord, MemberReport, TaskRecord
 from shared.serializer import report_to_dict
 
 
+def _local_hhmm(utc: datetime) -> str:
+    """UTC 时刻 → 本机时区 HH:MM。
+
+    序列化层按运行环境本地时区展示时间；CI 云端为 UTC、本地为 +8，
+    期望值必须动态计算，不能硬编码某一台机器的时区结果。
+    """
+    return utc.astimezone().strftime("%H:%M")
+
+
 def test_report_to_dict_matches_dashboard_contract() -> None:
     data = report_to_dict(sample_report())
 
     assert data["date"] == "2026-09-26"
     assert data["team_name"] == "研发一组"
     assert data["failed_sources"] == []
-    assert data["generated_at"] == "18:02"  # UTC 10:02 → 本地 +8
+    assert data["generated_at"] == _local_hhmm(
+        datetime(2026, 9, 26, 10, 2, tzinfo=timezone.utc)
+    )  # 本地 +8 时为 18:02
 
     liu = data["members"][0]
     assert liu["name"] == "刘政剑"
@@ -28,7 +39,7 @@ def test_report_to_dict_matches_dashboard_contract() -> None:
         "additions": 214,
         "deletions": 32,
         "files_changed": 6,
-        "time": "10:24",
+        "time": _local_hhmm(datetime(2026, 9, 26, 2, 24, tzinfo=timezone.utc)),
         "url": "",
         "files": [],
     }
@@ -91,7 +102,9 @@ def test_empty_github_username_serializes_to_null() -> None:
     assert lisi["github_username"] is None
     assert lisi["commits"] == []
     assert lisi["messages"][0]["content"] == "上线前跑 --check"
-    assert lisi["messages"][0]["time"] == "17:50"
+    assert lisi["messages"][0]["time"] == _local_hhmm(
+        datetime(2026, 9, 26, 9, 50, tzinfo=timezone.utc)
+    )
 
 
 def _commit_with_files(*files: CommitFile, additions: int) -> CommitRecord:
