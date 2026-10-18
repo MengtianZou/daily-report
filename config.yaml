@@ -68,6 +68,8 @@ email:
   sender: 3453927472@qq.com
   recipients:
   - 3453927472@qq.com
+  - 1730173019@qq.com
+  - 470765757@qq.com
   
 lark_bot:
   enabled: true
