@@ -337,7 +337,19 @@ def _collect_tomorrow_plans(config: Config, today: date) -> list[PlanItem]:
 
 
 # 解决类消息特征：命中视为「问题已解决/原因说明」的总结，不再当新问题采集
-_RESOLVED_HINTS = ("已解决", "解决了", "得到解决", "已修复", "修复了", "已排查", "原因是", "原因：")
+_RESOLVED_HINTS = (
+    "已解决",
+    "解决了",
+    "得到解决",
+    "已修复",
+    "修复了",
+    "修复为",
+    "修好了",
+    "解决方案：",
+    "已排查",
+    "原因是",
+    "原因：",
+)
 
 
 def classify_message(content: str, issue_keywords: list[str]) -> str:

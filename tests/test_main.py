@@ -892,6 +892,16 @@ def test_classify_message_resolved_hint_takes_priority() -> None:
     assert main.classify_message("报错已修复", kws) == "resolved"
     # 解决总结可能不含任何问题关键词
     assert main.classify_message("已修复，原因是配置写错", kws) == "resolved"
+    # 自然写法的解决宣告：修复为 / 修好了 / 解决方案：（真实误判案例）
+    assert (
+        main.classify_message("时区问题解决方案：修复为按运行环境动态计算期望时刻", kws)
+        == "resolved"
+    )
+    assert (
+        main.classify_message("时区硬编码 bug，修复为按运行环境动态计算期望时刻", kws)
+        == "resolved"
+    )
+    assert main.classify_message("接口修好了", kws) == "resolved"
     assert main.classify_message("正常上线消息", kws) == "normal"
 
 
