@@ -33,7 +33,7 @@ import httpx
 from collector import github, lark_msg, lark_task
 from collector._lark_client import LarkClient
 from generator import formatter, summarizer
-from notifier import email, lark_bot
+from notifier import archive, email, lark_bot
 from shared.config import Config, load_config
 from shared.envfile import load_envfile
 from shared.errors import CollectorError, ConfigurationError, NotifierError
@@ -835,6 +835,8 @@ def run_pipeline(
             push_results = _push_all(config, report)
         except NotifierError as exc:
             logger.error("推送过程异常", extra={"error": str(exc)})
+        # 日报网页归档（附加环节，失败不阻断）：仅真实推送轮次触发
+        archive.publish(config, report)
 
     elapsed = time.time() - started
     logger.info(

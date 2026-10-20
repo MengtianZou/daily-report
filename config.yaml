@@ -82,6 +82,12 @@ ai:
   api_key_env: ZHIPU_API_KEY
   timeout: 60
   max_tokens: 800
+archive:
+  enabled: true
+  repo: chenpingan6158-a11y/IDNG.github.io
+  branch: gh-pages
+  token_env: GITHUB_TOKEN
+  timeout: 15
 storage:
   sqlite_path: data/reports.db
 dashboard:

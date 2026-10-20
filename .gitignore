@@ -13,6 +13,7 @@ __pycache__/
 data/*.db
 data/report-*.html
 data/service.lock
+data/archive/
 
 # IDE 与编辑器配置
 .idea/

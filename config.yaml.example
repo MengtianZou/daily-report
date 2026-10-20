@@ -89,6 +89,16 @@ ai:
   timeout: 60
   max_tokens: 800
 
+# 日报网页归档（可选）：每天日报推送后自动归档到 GitHub Pages（gh-pages 分支），
+# 老师打开固定网址即可按日期浏览全部历史日报。仓库 token（token_env 对应的
+# 环境变量）需 contents:write 权限；归档失败只记日志，不影响日报推送。
+archive:
+  enabled: false
+  repo: "org/repo.github.io"      # 归档目标仓库（gh-pages 分支，勿用 main 以免污染采集）
+  branch: "gh-pages"
+  token_env: "GITHUB_TOKEN"
+  timeout: 15
+
 # 日报历史存储
 storage:
   sqlite_path: "data/reports.db"
