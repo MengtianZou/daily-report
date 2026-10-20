@@ -9,7 +9,7 @@ github:
   base_url: https://api.github.com
   token_env: GITHUB_TOKEN
   repos:
-  - chenpingan6158-a11y/usermanagersystem.github.io
+  - chenpingan6158-a11y/IDNG.github.io
   per_page: 30
   timeout: 10
 lark_task:
@@ -68,8 +68,7 @@ email:
   sender: 3453927472@qq.com
   recipients:
   - 3453927472@qq.com
-  - 1730173019@qq.com
-  - 470765757@qq.com
+ 
   
 lark_bot:
   enabled: true
