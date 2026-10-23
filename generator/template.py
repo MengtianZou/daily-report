@@ -10,7 +10,6 @@ from datetime import date
 
 from jinja2 import Environment, BaseLoader
 
-from generator.diffview import inline_groups as diff_inline
 from shared.models import MemberReport
 
 _HTML_TEMPLATE = """<!DOCTYPE html>
@@ -52,18 +51,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             <div style="margin:2px 0 4px;font-size:11px;color:#9aa0a6;word-break:break-all;">邮箱内无法打开 GitHub 时，长按复制链接到浏览器：{{ c.html_url }}</div>
             {% else %}{{ c.message }}{% endif %}
             <span style="color:#16a34a;">+{{ c.additions }}</span>/<span style="color:#dc2626;">-{{ c.deletions }}</span>
-            {% set groups = diff_inline(c) %}
-            {% if groups %}
-            <div style="margin:6px 0 8px;">
-              {% for f, added in groups %}
-              <div style="font-size:12px;font-weight:600;color:#374151;">📄 {% if f.blob_url %}<a href="{{ f.blob_url }}" style="color:#2f6fed;">{{ f.filename }}</a>{% else %}{{ f.filename }}{% endif %}（<span style="color:#16a34a;">+{{ f.additions }}</span>/<span style="color:#dc2626;">-{{ f.deletions }}</span>）</div>
-              <div style="margin:2px 0 8px;padding:6px 10px;background:#f8fafc;border:1px solid #eef0f3;border-radius:6px;font-family:Consolas,Menlo,monospace;font-size:12px;line-height:1.7;white-space:pre-wrap;word-break:break-all;">{% for ln in added %}<span style="color:#16a34a;">+</span> {{ ln }}
-{% endfor -%}</div>
-              {% endfor %}
-            </div>
-            {% elif c.files %}
-            <div style="margin:4px 0 8px;font-size:12px;color:#6b7280;">改动较大，查看文件：{% for f in c.files %}{% if f.blob_url %}<a href="{{ f.blob_url }}" style="color:#2f6fed;">{{ f.filename }}</a>{% else %}{{ f.filename }}{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}（或上方「查看提交」查看完整差异）</div>
-            {% endif %}
         </li>
         {% endfor %}
       </ul>{% else %}<p style="margin:0;font-size:13px;color:#9aa0a6;">今日无记录</p>{% endif %}
@@ -183,5 +170,4 @@ def render_report_html(
         show_member_names=show_member_names,
         summary=summary,
         task_trend=task_trend or [],
-        diff_inline=diff_inline,
     )

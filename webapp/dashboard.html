@@ -539,38 +539,14 @@ svg{display:block}
       ? '<a class="commit-link" href="' + esc(c.url) + '" target="_blank" rel="noopener">' +
         esc(c.message) + ' <span class="commit-ext">查看提交 ↗</span></a>'
       : esc(c.message);
-    var filesHtml = "";
-    if (c.files && c.files.length) {
-      var inline = c.files.some(function (f) { return f.added && f.added.length; });
-      if (inline) {
-        filesHtml = '<div class="commit-files">' + c.files.map(function (f) {
-          var name = f.url
-            ? '<a class="commit-fname" href="' + esc(f.url) + '" target="_blank" rel="noopener">' + esc(f.filename) + "</a>"
-            : '<span class="commit-fname">' + esc(f.filename) + "</span>";
-          var lines = (f.added || []).map(function (ln) {
-            return '<div class="commit-line"><span class="commit-plus">+</span> ' + esc(ln) + "</div>";
-          }).join("");
-          return '<div class="commit-file">📄 ' + name +
-            ' <span class="diff-add">+' + f.additions + '</span><span class="diff-del">−' + f.deletions + "</span>" +
-            (lines ? '<div class="commit-diff">' + lines + "</div>" : "") + "</div>";
-        }).join("") + "</div>";
-      } else {
-        filesHtml = '<div class="commit-filelist">改动较大，查看文件：' + c.files.map(function (f) {
-          return f.url
-            ? '<a href="' + esc(f.url) + '" target="_blank" rel="noopener">' + esc(f.filename) + "</a>"
-            : esc(f.filename);
-        }).join(" · ") + "</div>";
-      }
-    }
     return '<li class="record">' +
       '<div class="record-top"><span class="repo">' + esc(c.repo) + "</span></div>" +
       '<span class="record-title">' + title + "</span>" +
       '<div class="record-meta">' +
         '<span class="diff-add">+' + c.additions + "</span>" +
         '<span class="diff-del">−' + c.deletions + "</span>" +
-        "<span>" + c.files_changed + " 个文件</span>" +
         '<span class="time">' + esc(c.time) + "</span>" +
-      "</div>" + filesHtml + "</li>";
+      "</div></li>";
   }
   function messageItem(m, idx) {
     return '<li class="record">' +

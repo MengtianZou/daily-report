@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from generator.diffview import inline_groups
 from generator.template import render_report_html
 from shared.models import (
     CommitRecord,
@@ -77,31 +76,8 @@ def _render_section(records: list, failed: bool, kind: str) -> list[str]:
             link = f" [查看提交]({c.html_url})" if c.html_url else ""
             lines.append(
                 f"- `{c.repo}` {c.message}（+{c.additions}/-{c.deletions}，"
-                f"{c.files_changed} 文件，{_hhmm(c.timestamp)}）{link}"
+                f"{_hhmm(c.timestamp)}）{link}"
             )
-            groups = inline_groups(c)
-            if groups:
-                # 小改动：内联展示每个文件的新增行
-                for f, added in groups:
-                    file_link = (
-                        f"[{f.filename}]({f.blob_url})"
-                        if f.blob_url
-                        else f.filename
-                    )
-                    lines.append(
-                        f"  - 📄 {file_link}（+{f.additions}/-{f.deletions}）"
-                    )
-                    for content in added:
-                        lines.append(f"    - + {content}")
-            elif c.files:
-                # 改动过大：不展示代码，仅提供文件跳转链接
-                for f in c.files:
-                    file_link = (
-                        f"[{f.filename}]({f.blob_url})"
-                        if f.blob_url
-                        else f.filename
-                    )
-                    lines.append(f"  - 📄 {file_link}")
     else:
         for idx, m in enumerate(records, start=1):
             lines.append(f"- 沟通记录{idx}：{m.content}（{_hhmm(m.timestamp)}）")

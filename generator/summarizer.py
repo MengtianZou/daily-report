@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from datetime import date
 
 import httpx
@@ -88,14 +89,110 @@ def build_prompt(digest: str) -> str:
         "每节写 1-2 条，用「-」开头的短句，直接陈述事实；该节没有可写内容时"
         "在标题下写「- 无」。只输出这三节内容，不要任何开场白和客套。\n"
         "硬性要求：数据里标注「已完成」的条目写进今日亮点时，每条必须以"
-        "「已完成」三字开头并复述条目内容（数据里写「已完成：xxx」，亮点就写"
+        "「已完成」三字开头并逐字复述条目内容（数据里写「已完成：xxx」，亮点就写"
         "「- 已完成 xxx」）；标注「进行中」的条目严禁写进今日亮点，只能放进"
-        "「明日关注」。\n"
+        "「明日关注」；严禁改写、扩写或补充数据中不存在的细节（如技术名词、"
+        "bug、模块名等），每个字都必须能在今日数据里找到出处。\n"
+        "下方输出示例仅示范格式，严禁把示例中的具体条目（登录模块开发、"
+        "修复支付回调bug 等）抄进输出。\n"
         "输出示例（模仿此格式）：\n"
         "今日亮点：\n- 已完成 登录模块开发\n- 已完成 修复支付回调bug\n"
         "风险提示：\n- 无\n明日关注：\n- 继续推进联调测试\n\n"
         f"今日数据：\n{digest}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 出处校验（防幻觉）：AI 输出的每条「- 」条目必须能在 digest 原文里找到出处，
+# 找不到的剔除；今日亮点全部被剔除时整篇弃用（降级为无摘要）。
+# 背景：glm-4-flash 曾把 prompt 里的 few-shot 示例句当真实数据抄进日报。
+# ---------------------------------------------------------------------------
+
+_LEADING_DONE_RE = re.compile(r"^(已完成|完成|做完|搞定)\s*")
+_STATUS_PREFIX_RE = re.compile(r"^(已完成|进行中)[：:]\s*")
+_PROGRESS_TAIL_RE = re.compile(r"[+-]\d+/-\d+$")
+
+
+def _grounding_sources(digest: str) -> list[str]:
+    """从 digest 原文提取可作为「出处」的候选片段集合。"""
+
+    sources: list[str] = []
+    for raw in digest.splitlines():
+        line = raw.strip()
+        if line.startswith("- "):
+            body = line[2:]
+            # 问题行「p → s（已解决）」去掉尾部状态括号；按 → 和 | 拆段
+            body = re.sub(r"（[^）]*）$", "", body)
+            segments = re.split(r"→|\|", body)
+        else:
+            # 清单标题等非条目行（如「10月15日任务清单（已完成 1/3）：」）
+            segments = [re.sub(r"[：:]$", "", re.sub(r"（[^）]*）", "", line))]
+        for seg in segments:
+            seg = _STATUS_PREFIX_RE.sub("", seg.strip())
+            seg = _PROGRESS_TAIL_RE.sub("", seg).strip()
+            if seg:
+                sources.append(seg)
+    return sources
+
+
+def _char_jaccard(a: str, b: str) -> float:
+    sa, sb = set(a), set(b)
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
+
+
+def _grounded(entry: str, sources: list[str]) -> bool:
+    """条目是否有出处：剥掉「已完成」前缀后，与任一候选双向包含或字符集 Jaccard ≥ 0.6。"""
+
+    if entry in ("无", "暂无"):
+        return True
+    text = _LEADING_DONE_RE.sub("", entry).strip()
+    if not text:
+        return True
+    for src in sources:
+        if src in text or text in src:
+            return True
+        if _char_jaccard(text, src) >= 0.6:
+            return True
+    return False
+
+
+def strip_ungrounded(summary: str, digest: str) -> str:
+    """过滤摘要中无出处的条目；亮点被剔光时返回空串（整篇不可信）。"""
+
+    sources = _grounding_sources(digest)
+    if not sources:
+        return summary
+    kept: list[str] = []
+    section = ""
+    highlight_kept = False
+    dropped = 0
+    for raw in summary.splitlines():
+        s = raw.strip()
+        if s.startswith("今日亮点"):
+            section = "highlight"
+            kept.append(raw.rstrip())
+            continue
+        if s.startswith("风险提示") or s.startswith("明日关注"):
+            section = "other"
+            kept.append(raw.rstrip())
+            continue
+        if s.startswith("- ") and sources:
+            entry = s[2:].strip()
+            if _grounded(entry, sources):
+                kept.append(raw.rstrip())
+                if section == "highlight":
+                    highlight_kept = True
+            else:
+                dropped += 1
+            continue
+        kept.append(raw.rstrip())
+    if dropped:
+        logger.warning("AI 摘要剔除无出处条目", extra={"count": dropped})
+    if dropped and not highlight_kept:
+        return ""
+    return "\n".join(kept).strip()
 
 
 def _call_api(prompt: str, ai_cfg: dict) -> str:
@@ -167,6 +264,11 @@ def generate_summary(
         return ""
     if not summary:
         logger.warning("AI 摘要返回空内容，日报按无摘要继续")
+        return ""
+
+    summary = strip_ungrounded(summary, digest)
+    if not summary:
+        logger.warning("AI 摘要亮点均无出处（疑似模型幻觉），整篇降级为无摘要")
         return ""
 
     _CACHE[cache_key] = summary

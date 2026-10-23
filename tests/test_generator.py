@@ -222,8 +222,8 @@ def _report_with_commit(commit: CommitRecord):
     return formatter.generate([member], _DAY, "研发一组")
 
 
-def test_small_commit_inlines_added_lines_and_link() -> None:
-    # 即使只新增一个字也要提供提交跳转链接；小改动同时内联展示新增行
+def test_small_commit_renders_summary_with_link() -> None:
+    # 精简模式：只展示提交摘要，无文件内联/代码展示
     tiny = CommitFile(
         filename="config.py",
         status="added",
@@ -246,17 +246,15 @@ def test_small_commit_inlines_added_lines_and_link() -> None:
     report = _report_with_commit(commit)
 
     assert f"[查看提交]({_COMMIT_URL})" in report.markdown
-    assert "📄 [config.py]" in report.markdown
-    assert "- + x" in report.markdown
+    assert "+1/-0" in report.markdown
+    assert "📄" not in report.markdown
     assert _COMMIT_URL in report.html
-    assert _BLOB_URL in report.html
-    # 明文链接兜底：邮件客户端内嵌网页打不开 GitHub 时可复制到浏览器
     assert "长按复制链接到浏览器" in report.html
-    assert ">x<" in report.html or ">+ x<" in report.html or "x" in report.html
-    assert "config.py" in report.html
+    assert "+1" in report.html and "-0" in report.html
 
 
-def test_large_commit_renders_links_without_code_body() -> None:
+def test_large_commit_renders_summary_without_code_body() -> None:
+    # 精简模式：小改动大改动都只展示提交摘要，不展示文件和代码
     patch = "@@ -0,0 +1,21 @@\n" + "\n".join(
         f"+SECRET_CODE_LINE_{i}" for i in range(21)
     ) + "\n"
@@ -281,13 +279,13 @@ def test_large_commit_renders_links_without_code_body() -> None:
     )
     report = _report_with_commit(commit)
 
-    # 提交链接始终存在；代码内容不内联，只给文件链接
+    # 提交链接始终存在；代码内容和文件链接都不展示
     assert f"[查看提交]({_COMMIT_URL})" in report.markdown
-    assert "📄 [big.py]" in report.markdown
+    assert "📄" not in report.markdown
     assert "SECRET_CODE_LINE_0" not in report.markdown
     assert _COMMIT_URL in report.html
     assert "SECRET_CODE_LINE_0" not in report.html
-    assert "https://github.com/org/repo/blob/sha1/big.py" in report.html
+    assert "big.py" not in report.html
 
 
 def test_issues_rendered_in_markdown_and_html() -> None:

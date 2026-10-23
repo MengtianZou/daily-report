@@ -150,9 +150,11 @@ def test_success_returns_summary(monkeypatch):
     monkeypatch.setenv("TEST_AI_KEY", "sk-test")
     monkeypatch.setattr(
         summarizer, "_call_api",
-        lambda prompt, cfg: "今日亮点：\n- 修复登录问题\n风险提示：\n- 无\n明日关注：\n- 联调验收",
+        lambda prompt, cfg: "今日亮点：\n- 已完成 修复登录问题\n风险提示：\n- 无\n明日关注：\n- 修复登录问题",
     )
-    summary = summarizer.generate_summary(_DAY, [], None, [], [], _AI_CFG)
+    summary = summarizer.generate_summary(
+        _DAY, _sample_members(), None, [], [], _AI_CFG
+    )
     assert summary.startswith("今日亮点")
 
 
@@ -162,7 +164,7 @@ def test_cache_hit_does_not_recall_api(monkeypatch):
 
     def _fake(prompt, cfg):
         calls.append(prompt)
-        return "今日亮点：\n- 摘要内容"
+        return "今日亮点：\n- 已完成 修复登录问题"
 
     monkeypatch.setattr(summarizer, "_call_api", _fake)
     first = summarizer.generate_summary(
@@ -181,7 +183,7 @@ def test_cache_miss_on_data_change(monkeypatch):
 
     def _fake(prompt, cfg):
         calls.append(prompt)
-        return "今日亮点：\n- 摘要内容"
+        return "今日亮点：\n- 已完成 修复登录问题"
 
     monkeypatch.setattr(summarizer, "_call_api", _fake)
     summarizer.generate_summary(_DAY, _sample_members(), None, [], [], _AI_CFG)
@@ -189,6 +191,72 @@ def test_cache_miss_on_data_change(monkeypatch):
         _DAY, _sample_members(), None, [PlanItem(title="新计划")], [], _AI_CFG
     )
     assert len(calls) == 2  # 数据变化重新生成
+
+
+# ---------------------------------------------------------------------------
+# 出处校验（防幻觉）：模型把 few-shot 示例句抄进日报的真实回归
+# ---------------------------------------------------------------------------
+
+def test_grounding_sources_extracts_all_digest_segments():
+    digest = summarizer.data_digest(
+        _sample_members(),
+        TaskRecord(assignee="", title="10月15日任务清单", status_from="", status_to="",
+                   updated_at=_T0800,
+                   subtasks=[TaskRecord(assignee="", title="写周报", status_from="",
+                                        status_to="已完成", updated_at=_T0800)]),
+        [PlanItem(title="明天写日报", owner="张三")],
+        [IssueItem(problem="登录报错", solution="配置写错", status="已解决", owner="张三")],
+    )
+    sources = summarizer._grounding_sources(digest)
+    assert "写周报" in sources          # 任务行剥「已完成：」前缀
+    assert "fix: 修复登录问题" in sources  # 提交行 message 段
+    assert "登录问题已定位" in sources   # 沟通行
+    assert "登录报错" in sources        # 问题行 → 左侧
+    assert "配置写错" in sources        # 问题行 → 右侧（状态括号已剥）
+    assert "明天写日报" in sources      # 计划行
+
+
+def test_strip_ungrounded_drops_example_copy():
+    # 真实回归：模型把 prompt 示例句「登录模块开发」「修复支付回调bug」抄进亮点，
+    # 而当天数据里只有「修复支付功能」相关条目
+    digest = "10月20日任务清单（已完成 1/2）：\n- 已完成：修复支付功能\n- 进行中：python网课"
+    summary = (
+        "今日亮点：\n- 已完成 登录模块开发\n- 已完成 修复支付回调bug\n"
+        "风险提示：\n- 无\n明日关注：\n- 继续推进python网课"
+    )
+    assert summarizer.strip_ungrounded(summary, digest) == ""  # 亮点全无出处 → 整篇弃用
+
+
+def test_strip_ungrounded_keeps_faithful_entries():
+    digest = "10月20日任务清单（已完成 1/1）：\n- 已完成：修复支付功能"
+    summary = "今日亮点：\n- 已完成 修复支付功能\n风险提示：\n- 无\n明日关注：\n- 无"
+    assert summarizer.strip_ungrounded(summary, digest) == summary
+
+
+def test_strip_ungrounded_filters_only_hallucinated_line():
+    digest = "10月20日任务清单（已完成 1/2）：\n- 已完成：修复支付功能\n- 进行中：python网课"
+    summary = (
+        "今日亮点：\n- 已完成 修复支付功能\n- 已完成 登录模块开发\n"
+        "风险提示：\n- 无\n明日关注：\n- 继续推进python网课"
+    )
+    filtered = summarizer.strip_ungrounded(summary, digest)
+    assert "- 已完成 修复支付功能" in filtered       # 忠实条目保留
+    assert "登录模块开发" not in filtered            # 抄示例的剔除
+    assert "- 继续推进python网课" in filtered        # 有出处（双向包含）保留
+
+
+def test_grounded_allows_mild_paraphrase():
+    # 语序微调但字符集一致 / 轻度润色不应误杀
+    sources = ["英语PPT发言稿读熟"]
+    assert summarizer._grounded("已完成 读熟英语PPT发言稿", sources)
+    assert summarizer._grounded("无", sources)
+    assert not summarizer._grounded("已完成 修复支付回调bug", ["修复支付功能"])
+
+
+def test_prompt_forbids_copying_examples():
+    prompt = summarizer.build_prompt("数据")
+    assert "严禁把示例中的具体条目" in prompt
+    assert "出处" in prompt
 
 
 # ---------------------------------------------------------------------------
