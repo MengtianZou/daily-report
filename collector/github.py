@@ -125,7 +125,7 @@ def _build_commit_record(repo: str, summary: dict, detail: dict) -> CommitRecord
     )
     return CommitRecord(
         author=author,
-        message=commit_info.get("message", ""),
+        message=commit_info.get("message", "").split("\n", 1)[0].strip(),
         timestamp=_parse_datetime(commit_info["author"]["date"]),
         repo=repo,
         additions=int(stats.get("additions", 0)),

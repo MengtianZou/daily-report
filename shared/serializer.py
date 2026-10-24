@@ -1,6 +1,6 @@
-"""DailyReport → 看板 JSON 序列化（design-v2 §3）。
+"""DailyReport → JSON 序列化（design-v2 §3）。
 
-输出字段名与 webapp/dashboard.html 的前端契约严格一致；
+输出字段名曾服务于旧 Web 看板前端；保留以兼容 Pages 归档和内部调试。
 仅做结构转换与时间格式化，不涉及 HTML/模板。
 """
 

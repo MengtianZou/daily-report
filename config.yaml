@@ -91,16 +91,9 @@ archive:
   timeout: 15
 storage:
   sqlite_path: data/reports.db
-dashboard:
-  auto_refresh:
-    enabled: true
-    interval_seconds: 15
-  member_accounts:
-    刘政剑:
-    - liuzhengjian
-    - 刘政剑
 schedule:
   push_time: '10:35'
+  collect_interval_seconds: 15
   holidays: []
   workdays:
   - '2026-10-11'

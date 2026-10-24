@@ -146,32 +146,28 @@ def test_view_report_missing_date_returns_false(config) -> None:
     assert main.view_report(config, "2026-09-26", opener=must_not_open) is False
 
 
-# ---- 默认动作：启动看板 ----
+# ---- 默认动作：启动后台服务 ----
 
-def test_default_invocation_starts_dashboard(config, monkeypatch) -> None:
+def test_default_invocation_starts_service(config, monkeypatch) -> None:
     called: list[str] = []
 
-    import webapp.server
-
     monkeypatch.setattr(
-        webapp.server, "serve", lambda cfg: called.append("serve")
+        main, "run_service", lambda cfg: called.append("run_service")
     )
 
     assert main.main(["--config", config.source_path]) == 0
-    assert called == ["serve"]
+    assert called == ["run_service"]
 
 
-def test_explicit_serve_starts_dashboard(config, monkeypatch) -> None:
+def test_explicit_serve_starts_service(config, monkeypatch) -> None:
     called: list[str] = []
 
-    import webapp.server
-
     monkeypatch.setattr(
-        webapp.server, "serve", lambda cfg: called.append("serve")
+        main, "run_service", lambda cfg: called.append("run_service")
     )
 
     assert main.main(["--config", config.source_path, "--serve"]) == 0
-    assert called == ["serve"]
+    assert called == ["run_service"]
 
 
 # ---- 管道 ----
@@ -1045,15 +1041,85 @@ def test_main_serve_rejected_when_already_locked(tmp_path, monkeypatch) -> None:
     try:
 
         def _boom(_config):
-            raise AssertionError("serve 不应被调用")
+            raise AssertionError("run_service 不应被调用")
 
-        monkeypatch.setattr("webapp.server.serve", _boom)
+        monkeypatch.setattr(main, "run_service", _boom)
         assert main.main(["--config", str(yaml_path), "--serve"]) == 1
     finally:
         main._release_service_lock()
 
-    # 锁释放后 --serve 正常进入 serve（用哨兵验证被调用）
+    # 锁释放后 --serve 正常进入 run_service（用哨兵验证被调用）
     sentinel: list = []
-    monkeypatch.setattr("webapp.server.serve", lambda cfg: sentinel.append(cfg))
+    monkeypatch.setattr(main, "run_service", lambda cfg: sentinel.append(cfg))
     assert main.main(["--config", str(yaml_path), "--serve"]) == 0
     assert len(sentinel) == 1
+
+
+# ---- 飞书群回执（specs/no-dashboard.md §2.2） ----
+
+def test_receipt_mark_dedup() -> None:
+    main._RECEIPT_SENT.clear()
+    assert main._receipt_mark("plan|k1|t1") is True
+    assert main._receipt_mark("plan|k1|t1") is False
+    assert main._receipt_mark("plan|k2|t2") is True
+
+
+def test_send_receipts_skips_when_disabled(config) -> None:
+    config["lark_bot"]["enabled"] = False
+    called: list = []
+    monkeypatch_obj = __import__("pytest").MonkeyPatch()
+    monkeypatch_obj.setattr(main.lark_bot, "send_text", lambda *a, **kw: called.append(1))
+    main._send_receipts(config, ["📌 x"])
+    assert called == []
+
+
+def test_send_receipts_skips_empty(config) -> None:
+    config["lark_bot"]["enabled"] = True
+    called: list = []
+    monkeypatch_obj = __import__("pytest").MonkeyPatch()
+    monkeypatch_obj.setattr(main.lark_bot, "send_text", lambda *a, **kw: called.append(1))
+    main._send_receipts(config, [])
+    assert called == []
+
+
+def test_send_receipts_builds_prefix_and_calls(config, monkeypatch) -> None:
+    config["lark_bot"]["enabled"] = True
+    sentinel: dict = {}
+
+    def fake_send(webhook, text, timeout=10):
+        sentinel["text"] = text
+        sentinel["webhook"] = webhook
+        return True
+
+    monkeypatch.setattr(main.lark_bot, "send_text", fake_send)
+
+    main._send_receipts(
+        config,
+        [
+            "📌 已收录为明日计划：写周报",
+            "✅ 已完成：PPT",
+            "⚠️ 已记录问题：GitHub 限流",
+        ],
+    )
+
+    assert sentinel["webhook"] == config["lark_bot"]["webhook"]
+    assert sentinel["text"].startswith("【智能日报】\n")
+    assert "📌 已收录为明日计划：写周报" in sentinel["text"]
+    assert "✅ 已完成：PPT" in sentinel["text"]
+    assert "⚠️ 已记录问题：GitHub 限流" in sentinel["text"]
+
+
+def test_send_receipts_exception_swallowed(config, monkeypatch) -> None:
+    config["lark_bot"]["enabled"] = True
+
+    def fake_send(*a, **kw):
+        raise RuntimeError("网络崩了")
+
+    monkeypatch.setattr(main.lark_bot, "send_text", fake_send)
+    main._send_receipts(config, ["📌 x"])  # 不应抛
+
+
+def test_send_receipts_false_ignored(config, monkeypatch) -> None:
+    config["lark_bot"]["enabled"] = True
+    monkeypatch.setattr(main.lark_bot, "send_text", lambda *a, **kw: False)
+    main._send_receipts(config, ["📌 x"])  # 不应抛

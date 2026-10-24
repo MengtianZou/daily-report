@@ -49,6 +49,38 @@ def _is_success(payload: dict) -> bool:
     return payload.get("StatusCode", payload.get("status_code", -1)) == 0
 
 
+def send_text(
+    webhook: str,
+    text: str,
+    *,
+    timeout: float = 10.0,
+    max_retries: int = 2,
+    http_client: Any = None,
+) -> bool:
+    """向飞书机器人 webhook 发送纯文本消息（群回执用）。"""
+
+    http = http_client or httpx.Client(timeout=timeout)
+    payload = {"msg_type": "text", "content": {"text": text}}
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = http.post(webhook, json=payload)
+            body = resp.json()
+            if _is_success(body):
+                return True
+            logger.error(
+                "飞书机器人拒绝文本消息",
+                extra={"attempt": attempt, "response": body},
+            )
+        except httpx.HTTPError as exc:
+            logger.error(
+                "飞书机器人文本请求失败",
+                extra={"attempt": attempt, "error": str(exc)},
+            )
+
+    return False
+
+
 def send(
     report: DailyReport,
     chat_id: str,

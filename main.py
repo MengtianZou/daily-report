@@ -1,15 +1,16 @@
-"""智能日报生成器 — 主编排入口（design.md §2 main.py）。
+"""智能日报生成器 — 主编排入口（design.md §2 main.py，specs/no-dashboard.md）。
 
 按“采集 → 聚合 → 生成 → 存储 → 推送”顺序编排管道，处理全局异常并记录执行状态。
 
 用法：
-    python main.py                 # 默认：启动本地只读看板服务（浏览器自动打开）
+    python main.py                 # 默认：启动后台服务（15 秒采集 + 定时推送）
     python main.py --serve         # 同上（显式写法）
     python main.py --run           # 执行一次完整流程（非工作日自动跳过）
     python main.py --run --dry-run # 只采集、生成，不推送
     python main.py --check         # 检查 API / 邮件 / 机器人配置
-    python main.py --view          # 在浏览器中打开最新日报看板
-    python main.py --view 2026-09-25  # 打开指定日期的日报看板
+    python main.py --status        # 打印今日捕获摘要（提交/消息/任务/计划/问题）
+    python main.py --view          # 在浏览器中打开最新日报 HTML
+    python main.py --view 2026-09-25  # 打开指定日期的日报 HTML
     python main.py --config x.yaml # 指定配置文件
 
 凭证：配置文件同目录下的 .env 会被自动加载（见 .env 模板），无需每次手动设置。
@@ -22,6 +23,7 @@ import atexit
 import os
 import re
 import socket
+import threading
 import time
 import webbrowser
 from datetime import date, datetime, timedelta
@@ -40,7 +42,6 @@ from shared.errors import CollectorError, ConfigurationError, NotifierError
 from shared.logger import get_logger
 from shared.models import IssueItem, PlanItem, TaskRecord
 from shared.storage import ReportStorage
-from webapp.export import render_dashboard
 
 logger = get_logger(__name__)
 
@@ -371,12 +372,15 @@ def _collect_issues(
     since: datetime,
     until: datetime,
     today: date,
+    receipts: list[str] | None = None,
 ) -> tuple[list[IssueItem], set[tuple[str, str]]]:
     """组装问题与解决：自动（群消息按问题关键词提取）+ 手动（issues 表）。
 
     返回 (条目列表, 问题消息键集合)。判定为「问题描述」的消息即使同时命中
     协作沟通关键词，也由 run_pipeline 从沟通板块剔除，保证同一句话只出现在
     问题与解决；「已解决/原因是」类总结消息自动挂为同负责人最近问题的方案。
+    receipts 非 None 时，本轮新记录的问题 / 新挂载的方案追加回执文案
+    （自动条目无持久态，靠进程内去重，重启后当日条目最多重发一次）。
     """
 
     issues: list[IssueItem] = []
@@ -432,6 +436,12 @@ def _collect_issues(
                             ):
                                 item.solution = m.content
                                 item.status = "已解决"
+                                if receipts is not None and _receipt_mark(
+                                    f"resolved|{key}"
+                                ):
+                                    receipts.append(
+                                        f"✅ 问题已更新方案：{item.problem}"
+                                    )
                                 break
                         continue
                     if key in claimed or (m.sender, m.timestamp.isoformat()) in issue_keys:
@@ -446,6 +456,8 @@ def _collect_issues(
                             msg_key=key,
                         )
                     )
+                    if receipts is not None and _receipt_mark(f"issue|{key}"):
+                        receipts.append(f"⚠️ 已记录问题：{m.content}")
 
         for row in manual_rows:
             issues.append(
@@ -466,6 +478,43 @@ def _collect_issues(
 # 群消息任务闭环：明日计划捕捉 / 当日清单保障 / 完成宣告
 # ---------------------------------------------------------------------------
 
+# 飞书群回执：进程内已回执键集合（specs/no-dashboard.md §2.2）。
+# plans 靠 plans 表 msg_key、done 靠飞书完成态天然跨进程去重；
+# issues/方案挂载无持久态，靠本集合保证进程内每键只回执一次。
+_RECEIPT_SENT: set[str] = set()
+
+
+def _receipt_mark(key: str) -> bool:
+    """登记回执键；首次登记返回 True（应发回执），重复返回 False。"""
+
+    if key in _RECEIPT_SENT:
+        return False
+    _RECEIPT_SENT.add(key)
+    return True
+
+
+def _send_receipts(config: Config, receipts: list[str]) -> None:
+    """把本轮新捕获条目合并为一条群回执发出；失败仅记日志，绝不阻断管道。
+
+    前缀「【智能日报】」与日报卡片标题同词，保证过机器人 webhook 的
+    自定义关键词安全校验。
+    """
+
+    if not receipts or not config["lark_bot"].get("enabled"):
+        return
+    cfg = config["lark_bot"]
+    text = "【智能日报】\n" + "\n".join(receipts)
+    try:
+        ok = lark_bot.send_text(
+            cfg["webhook"], text, timeout=cfg.get("timeout", 10)
+        )
+    except Exception as exc:  # 回执是附加环节，任何异常都不阻断管道
+        logger.warning("群回执发送异常", extra={"error": str(exc)})
+        return
+    if not ok:
+        logger.warning("群回执被机器人拒绝", extra={"count": len(receipts)})
+
+
 def _lark_task_client(config: Config) -> LarkClient:
     """按 lark_task 配置构建飞书客户端（token 惰性获取）。"""
 
@@ -482,6 +531,7 @@ def _collect_plan_messages(
     since: datetime,
     until: datetime,
     today: date,
+    receipts: list[str] | None = None,
 ) -> set[tuple[str, str]]:
     """捕捉群消息中的明日计划（命中 plan_keywords），落 plans 表。
 
@@ -491,6 +541,7 @@ def _collect_plan_messages(
     中段写法，编号列表（1.…。2.…）拆分为多条。
     返回已捕捉消息键集合，供 run_pipeline 从协作沟通板块剔除；早前轮次
     已入库的消息每轮也加入剔除集合，保证不回流到沟通板块。
+    receipts 非 None 时，本轮新收录的条目追加回执文案（已入库的不回执）。
     """
 
     plan_keys: set[tuple[str, str]] = set()
@@ -547,6 +598,8 @@ def _collect_plan_messages(
                     plan_date=tomorrow,
                     msg_key=key,
                 )
+                if receipts is not None and _receipt_mark(f"plan|{key}|{title}"):
+                    receipts.append(f"📌 已收录为明日计划：{title}")
             plan_keys.add(sender_key)
     return plan_keys
 
@@ -630,6 +683,7 @@ def _collect_done_messages(
     since: datetime,
     until: datetime,
     task_list: TaskRecord | None,
+    receipts: list[str] | None = None,
 ) -> set[tuple[str, str]]:
     """捕捉完成宣告（命中 done_keywords）并同步完成状态。
 
@@ -639,7 +693,8 @@ def _collect_done_messages(
     才命中）匹配；一条消息命中多个子任务全部放弃。命中后先飞书打勾（失败
     下轮重试），再落库标完成；对已完成子任务的完成宣告只做落库对账并从
     沟通剔除（防往轮消息重复处理）。
-    返回已消费消息键集合。
+    返回已消费消息键集合。receipts 非 None 时，本轮新打勾成功的条目追加
+    回执文案（对账分支不回执）。
     """
 
     def _norm(title: str) -> str:
@@ -741,6 +796,8 @@ def _collect_done_messages(
                 continue
             storage.mark_plans_done_by_title(title)
             done_keys.add(key)
+            if receipts is not None and _receipt_mark(f"done|{title}"):
+                receipts.append(f"✅ 已完成：{title}")
     return done_keys
 
 
@@ -778,9 +835,10 @@ def run_pipeline(
     if rolled:
         logger.info("未完成计划滚动至今日", extra={"count": rolled})
 
-    plan_keys = _collect_plan_messages(config, since, until, today)
+    receipts: list[str] = []
+    plan_keys = _collect_plan_messages(config, since, until, today, receipts)
     task_list = _ensure_daily_tasklist(config, today, failed)
-    done_keys = _collect_done_messages(config, since, until, task_list)
+    done_keys = _collect_done_messages(config, since, until, task_list, receipts)
 
     attempted = config.enabled_sources()
     if attempted and len(failed) == len(attempted):
@@ -791,7 +849,8 @@ def run_pipeline(
         )
         return False
 
-    issues, issue_keys = _collect_issues(config, since, until, today)
+    issues, issue_keys = _collect_issues(config, since, until, today, receipts)
+    _send_receipts(config, receipts)  # 采集轮也发：群消息捕捉的实时确认
     consumed = issue_keys | plan_keys | done_keys
     if consumed:
         # 已归入问题/计划/完成宣告的消息不再重复出现在协作沟通板块
@@ -853,7 +912,263 @@ def run_pipeline(
 
 
 # ---------------------------------------------------------------------------
-# 日报页面查看
+# 采集间隔配置（specs/no-dashboard.md §2.1）
+# ---------------------------------------------------------------------------
+
+_MIN_COLLECT_INTERVAL = 10
+_DEFAULT_COLLECT_INTERVAL = 15
+
+
+def collect_interval(config: Config) -> int:
+    """读取 schedule.collect_interval_seconds；非法值回落默认 15，下限钳制 10。"""
+
+    raw = ((config.get("schedule") or {}).get("collect_interval_seconds"))
+    try:
+        value = int(raw) if raw is not None else _DEFAULT_COLLECT_INTERVAL
+    except (TypeError, ValueError):
+        value = _DEFAULT_COLLECT_INTERVAL
+    return max(value, _MIN_COLLECT_INTERVAL)
+
+
+# ---------------------------------------------------------------------------
+# 调度线程（AutoCollector / ScheduledPusher，迁自 webapp/server.py，specs/no-dashboard.md §2.1）
+# ---------------------------------------------------------------------------
+
+class AutoCollector:
+    """守护线程：立即采集一次，之后按固定间隔循环；异常不中断。"""
+
+    def __init__(
+        self,
+        config,
+        interval_seconds: int,
+        *,
+        collect_func=None,
+    ) -> None:
+        self._config = config
+        self._interval = interval_seconds
+        self._collect = collect_func or self._default_collect
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._thread.join(timeout=5)
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self._collect(self._config)
+            except Exception as exc:
+                logger.warning(
+                    "自动采集失败，将在下一轮重试",
+                    extra={"error": str(exc)},
+                )
+            self._stop_event.wait(self._interval)
+
+    @staticmethod
+    def _default_collect(config) -> None:
+        run_pipeline(config, dry_run=True, force=True)
+
+
+class ScheduledPusher:
+    """守护线程：每天在 schedule.push_time 到点时执行一次完整管道（含推送）。
+
+    防重：记录上次推送的日期，同一天只推一次；错过时间（服务晚于 push_time 启动）
+    当天内补推一次。推送日期同时写入 SQLite meta 表，多实例并存时
+    后启动的实例读到当日标记即跳过，避免重复推送。
+    """
+
+    CHECK_INTERVAL = 20
+    PUSH_MARKER = "last_push_date"
+
+    def __init__(self, config, *, run_func=None, clock=None) -> None:
+        self._config = config
+        self._run = run_func or self._default_run
+        self._clock = clock or (lambda: datetime.now().astimezone())
+        self._push_time = self._parse_push_time(config)
+        self._last_push_date: str | None = None
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+
+    @staticmethod
+    def _parse_push_time(config) -> tuple[int, int] | None:
+        raw = ((config.get("schedule") or {}).get("push_time")) or ""
+        try:
+            hh, mm = str(raw).split(":")
+            hh, mm = int(hh), int(mm)
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                return None
+            return (hh, mm)
+        except (ValueError, AttributeError):
+            return None
+
+    @property
+    def enabled(self) -> bool:
+        return self._push_time is not None
+
+    def start(self) -> None:
+        if self.enabled:
+            self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=5)
+
+    def _loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self._maybe_push()
+            except Exception as exc:
+                logger.warning(
+                    "定时推送失败，明天再试",
+                    extra={"error": str(exc)},
+                )
+            self._stop_event.wait(self.CHECK_INTERVAL)
+
+    def _maybe_push(self) -> None:
+        now = self._clock()
+        today = now.date().isoformat()
+        if self._last_push_date == today:
+            return
+        hh, mm = self._push_time
+        if (now.hour, now.minute) >= (hh, mm):
+            if self._read_push_marker() == today:
+                self._last_push_date = today
+                return
+            self._last_push_date = today
+            self._run(self._config)
+            self._write_push_marker(today)
+
+    def _sqlite_path(self) -> str:
+        return (self._config.get("storage") or {}).get("sqlite_path", "")
+
+    def _read_push_marker(self) -> str:
+        db_path = self._sqlite_path()
+        if not db_path:
+            return ""
+        try:
+            with ReportStorage(db_path) as storage:
+                return storage.get_meta(self.PUSH_MARKER)
+        except Exception:
+            return ""
+
+    def _write_push_marker(self, date_str: str) -> None:
+        db_path = self._sqlite_path()
+        if not db_path:
+            return
+        try:
+            with ReportStorage(db_path) as storage:
+                storage.set_meta(self.PUSH_MARKER, date_str)
+        except Exception:
+            logger.warning("推送标记写入失败", extra={"date": date_str})
+
+    @staticmethod
+    def _default_run(config) -> None:
+        run_pipeline(config)
+
+
+def run_service(config: Config, *, stop_event: threading.Event | None = None) -> None:
+    """启动后台服务并阻塞：15 秒采集 + 定时推送；stop_event 置位或 Ctrl+C 退出。"""
+
+    interval = collect_interval(config)
+    collector = AutoCollector(config, interval)
+    pusher = ScheduledPusher(config)
+
+    archive_enabled = bool((config.get("archive") or {}).get("enabled", False))
+    print(f"Daily Report Service started (interval={interval}s). Ctrl+C to stop.")
+    if pusher.enabled:
+        push_time = (config.get("schedule") or {}).get("push_time")
+        print(f"  Daily push scheduled at {push_time}.")
+    if archive_enabled:
+        print("  GitHub Pages archive enabled.")
+
+    collector.start()
+    pusher.start()
+
+    stop = stop_event or threading.Event()
+    try:
+        stop.wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        collector.stop()
+        pusher.stop()
+        print("Service stopped.")
+
+
+# ---------------------------------------------------------------------------
+# --status 命令（specs/no-dashboard.md §2.3）
+# ---------------------------------------------------------------------------
+
+def run_status(config: Config) -> int:
+    """打印今日捕获摘要；全读 SQLite，不触网。无报告时返回 1 并引导。"""
+
+    now = datetime.now().astimezone()
+    today_iso = now.date().isoformat()
+    tomorrow_iso = (now.date() + timedelta(days=1)).isoformat()
+
+    with ReportStorage(config["storage"]["sqlite_path"]) as storage:
+        reports = storage.iter_report_data(limit=1)
+        latest = reports[0] if reports else None
+
+        plans_tomorrow = list(storage.iter_plans(tomorrow_iso))
+        issues_today = list(storage.iter_issues(today_iso))
+        push_date = storage.get_meta(ScheduledPusher.PUSH_MARKER)
+        archive_date = storage.get_meta("archive_last_date")
+
+    if latest and latest.get("date") == today_iso:
+        print(f"=== {config.team_name} · 今日日报（{today_iso}） ===")
+        print(f"生成时间：{latest.get('generated_at', '—')}")
+        commits = latest.get("commits", []) or []
+        messages = latest.get("messages", []) or []
+        task_list = latest.get("task_list") or {}
+        subtasks = task_list.get("subtasks", []) or []
+        done_n = sum(1 for s in subtasks if s.get("status_to") == "已完成")
+        total_n = len(subtasks)
+        print(f"GitHub 提交：{len(commits)}")
+        print(f"协作消息：{len(messages)}")
+        print(f"今日任务清单：{done_n}/{total_n} 已完成")
+        for s in subtasks:
+            mark = "✅" if s.get("status_to") == "已完成" else "⬜"
+            print(f"  {mark} {s.get('title', '（无标题）')}")
+
+        plans = latest.get("tomorrow_plans", []) or []
+        if plans:
+            print(f"明日计划（{len(plans)}）：")
+            for p in plans:
+                print(f"  📌 {p.get('title')}")
+
+        if issues_today:
+            print(f"问题与解决（{len(issues_today)}）：")
+            for i in issues_today:
+                tag = "✅" if i.get("status") == "已解决" else "⚠️"
+                owner = f" [{i['owner']}]" if i.get("owner") else ""
+                print(f"  {tag} {i['problem']}{owner}")
+
+        if push_date:
+            print(f"最近推送：{push_date}")
+        if archive_date:
+            print(f"最近归档：{archive_date}")
+        return 0
+
+    print(f"=== {config.team_name} · {today_iso} 尚无日报 ===")
+    if not push_date:
+        print("  （服务未在运行或尚未到 10:35 定时推送）")
+    if plans_tomorrow:
+        print(f"明日计划已捕获 {len(plans_tomorrow)} 条：")
+        for p in plans_tomorrow:
+            print(f"  📌 {p['title']}")
+    if issues_today:
+        print(f"今日问题已记录 {len(issues_today)} 条")
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# 日报页面查看（改造为直读 reports 表 html 字段，specs/no-dashboard.md §2.4）
 # ---------------------------------------------------------------------------
 
 def view_report(
@@ -862,37 +1177,31 @@ def view_report(
     *,
     opener: Any = webbrowser.open,
 ) -> bool:
-    """导出注入真实数据的看板并在默认浏览器打开（design-v2 §8）。"""
+    """直读 reports 表 html 字段落盘并浏览器打开；无日报返回 False。"""
 
     with ReportStorage(config["storage"]["sqlite_path"]) as storage:
-        reports = storage.iter_report_data()
+        if date_str:
+            report_row = storage.get_report(date_str, config.team_name)
+        else:
+            rows = storage.list_reports(limit=1)
+            if rows:
+                date_str = rows[0]["date"]
+                report_row = storage.get_report(date_str, config.team_name)
+            else:
+                report_row = None
 
-    if not reports:
-        logger.info("看板暂无可用的日报数据")
+    if not report_row or not report_row.get("html"):
+        logger.info("暂无可用的日报 HTML")
+        print("暂无可用的日报 HTML。")
         return False
 
-    if date_str is not None:
-        available = {r["date"] for r in reports}
-        if date_str not in available:
-            logger.info(
-                "指定日期没有可展示的日报",
-                extra={"date": date_str},
-            )
-            return False
-        out_name = f"report-{date_str}.html"
-        initial_date: str | None = date_str
-    else:
-        out_name = "dashboard.html"
-        initial_date = None
-
     out_path = (
-        Path(config["storage"]["sqlite_path"]).parent / out_name
+        Path(config["storage"]["sqlite_path"]).parent
+        / f"report-{date_str}.html"
     )
-    out_path.write_text(
-        render_dashboard(reports, initial_date), encoding="utf-8"
-    )
+    out_path.write_text(report_row["html"], encoding="utf-8")
     opener(out_path.resolve().as_uri())
-    logger.info("已在浏览器打开日报看板", extra={"path": str(out_path)})
+    logger.info("已在浏览器打开日报 HTML", extra={"path": str(out_path)})
     return True
 
 
@@ -930,7 +1239,6 @@ def _acquire_service_lock(config: Config) -> bool:
     lock_path = _service_lock_path(config)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        # O_RDWR|O_CREAT 不截断：避免冲突方 open("w") 清空持有者写入的 PID
         handle = os.fdopen(os.open(lock_path, os.O_RDWR | os.O_CREAT), "r+b")
     except OSError as exc:
         logger.warning(
@@ -989,7 +1297,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--run",
         action="store_true",
-        help="执行一次日报采集与生成（默认动作是启动看板服务）",
+        help="执行一次日报采集与生成（默认动作是启动后台服务）",
     )
     parser.add_argument("--dry-run", action="store_true", help="只采集生成，不推送（配合 --run）")
     parser.add_argument("--date", default=None, help="指定日报日期（YYYY-MM-DD，配合 --run）")
@@ -998,12 +1306,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         nargs="?",
         const="",
         default=None,
-        help="在浏览器中打开日报看板（可选日期 YYYY-MM-DD，默认最新）",
+        help="在浏览器中打开日报 HTML（可选日期 YYYY-MM-DD，默认最新）",
+    )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="打印今日捕获摘要（提交/消息/任务/计划/问题）",
     )
     parser.add_argument(
         "--serve",
         action="store_true",
-        help="启动本地只读看板服务（仅 127.0.0.1）",
+        help="启动后台服务（默认动作；含 15s 采集 + 定时推送）",
     )
     return parser.parse_args(argv)
 
@@ -1011,7 +1324,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
-    # 自动加载配置文件同目录下的 .env（若存在）；已存在的环境变量优先
     env_path = Path(args.config).resolve().parent / ".env"
     load_envfile(env_path)
 
@@ -1023,6 +1335,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check:
         return 0 if run_check(config) else 1
+
+    if args.status:
+        return run_status(config)
 
     if args.view is not None:
         date_str = args.view or None
@@ -1036,23 +1351,21 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 0 if run_pipeline(config, now=forced_now, dry_run=args.dry_run) else 1
 
-    # 默认动作（含显式 --serve）：启动本地只读看板服务
-    from webapp.server import serve
-
+    # 默认动作（含显式 --serve）：启动后台服务
     if not _acquire_service_lock(config):
         pid = _read_lock_pid(config)
         logger.error(
-            "已有看板服务实例在运行，拒绝重复启动",
+            "已有后台服务实例在运行，拒绝重复启动",
             extra={"running_pid": pid or "未知"},
         )
         print(
-            f"检测到看板服务已在运行（PID {pid or '未知'}），请勿重复启动；"
+            f"检测到服务已在运行（PID {pid or '未知'}），请勿重复启动；"
             "如需重启请先关闭现有实例。"
         )
         return 1
 
     try:
-        serve(config)
+        run_service(config)
     except KeyboardInterrupt:
         pass
     return 0
