@@ -48,7 +48,7 @@ def sample_report(day: str = "2026-09-26") -> DailyReport:
         messages=[
             MessageRecord(
                 sender="ou_lzj",
-                content="模板已调试验通过",
+                content="模板已联调通过",
                 timestamp=datetime(2026, 9, 26, 3, 2, tzinfo=_UTC),
                 chat_name="SDD测试",
             )
